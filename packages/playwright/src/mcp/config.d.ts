@@ -16,7 +16,7 @@
 
 import type * as playwright from 'playwright-core';
 
-export type ToolCapability = 'core' | 'core-tabs' | 'core-install' | 'vision' | 'pdf' | 'testing' | 'tracing';
+export type ToolCapability = 'core' | 'core-tabs' | 'core-install' | 'vision' | 'pdf' | 'testing' | 'tracing' | 'diffs' | 'styles' | 'scenarios' | 'perf';
 
 export type Config = {
   /**
@@ -104,6 +104,12 @@ export type Config = {
    *   - 'core': Core browser automation features.
    *   - 'pdf': PDF generation and manipulation.
    *   - 'vision': Coordinate-based interactions.
+   *   - 'testing': Verification helpers for tests.
+   *   - 'tracing': Trace capture helpers.
+   *   - 'diffs': Snapshot and screenshot diff tools.
+   *   - 'styles': Computed style and layout snapshot tools.
+   *   - 'scenarios': Scenario runner tools.
+   *   - 'perf': Performance sampling tools.
    */
   capabilities?: ToolCapability[];
 

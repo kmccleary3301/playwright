@@ -17,6 +17,7 @@
 import common from './tools/common';
 import console from './tools/console';
 import dialogs from './tools/dialogs';
+import diff from './tools/diff';
 import evaluate from './tools/evaluate';
 import files from './tools/files';
 import form from './tools/form';
@@ -26,9 +27,13 @@ import mouse from './tools/mouse';
 import navigate from './tools/navigate';
 import network from './tools/network';
 import pdf from './tools/pdf';
+import perf from './tools/perf';
 import runCode from './tools/runCode';
+import scenario from './tools/scenario';
 import snapshot from './tools/snapshot';
 import screenshot from './tools/screenshot';
+import screenshotDiff from './tools/screenshotDiff';
+import style from './tools/style';
 import tabs from './tools/tabs';
 import tracing from './tools/tracing';
 import wait from './tools/wait';
@@ -41,6 +46,7 @@ export const browserTools: Tool<any>[] = [
   ...common,
   ...console,
   ...dialogs,
+  ...diff,
   ...evaluate,
   ...files,
   ...form,
@@ -50,9 +56,13 @@ export const browserTools: Tool<any>[] = [
   ...network,
   ...mouse,
   ...pdf,
+  ...perf,
   ...runCode,
+  ...scenario,
   ...screenshot,
+  ...screenshotDiff,
   ...snapshot,
+  ...style,
   ...tabs,
   ...tracing,
   ...wait,
