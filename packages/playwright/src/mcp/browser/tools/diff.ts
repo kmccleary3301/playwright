@@ -21,6 +21,7 @@ import { diff } from 'playwright-core/lib/utilsBundle';
 import { z } from 'playwright-core/lib/mcpBundle';
 
 import { defineTabTool } from './tool';
+import { outputDir as outputDirForClient } from '../config';
 
 import type { Context } from '../context';
 import type { Tab } from '../tab';
@@ -44,7 +45,7 @@ function resolveMaybeRelative(context: Context, inputPath: string): string {
   const cwdPath = path.resolve(process.cwd(), inputPath);
   if (fs.existsSync(cwdPath))
     return cwdPath;
-  const outDir = context.config.outputDir ? path.resolve(context.config.outputDir) : process.cwd();
+  const outDir = outputDirForClient(context.config, context.options.clientInfo);
   return path.resolve(outDir, inputPath);
 }
 
@@ -82,6 +83,7 @@ async function captureDomSnapshot(tab: Tab, params: { ref?: string, element?: st
     html = html.replace(/<style[\s\S]*?<\/style>/gi, '');
 
   if (params.normalize !== 'none') {
+    html = html.replace(/\sstyle=""/g, '');
     html = normalizeText(html)
         .split('\n')
         .map(line => line.trimEnd())

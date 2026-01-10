@@ -21,6 +21,7 @@ import { PNG } from 'playwright-core/lib/utilsBundle';
 import { z } from 'playwright-core/lib/mcpBundle';
 
 import { defineTabTool } from './tool';
+import { outputDir as outputDirForClient } from '../config';
 
 const { compare } = require('playwright-core/lib/server/utils/image_tools/compare');
 
@@ -32,7 +33,7 @@ function resolveMaybeRelative(context: Context, inputPath: string): string {
   const cwdPath = path.resolve(process.cwd(), inputPath);
   if (fs.existsSync(cwdPath))
     return cwdPath;
-  const outDir = context.config.outputDir ? path.resolve(context.config.outputDir) : process.cwd();
+  const outDir = outputDirForClient(context.config, context.options.clientInfo);
   return path.resolve(outDir, inputPath);
 }
 
