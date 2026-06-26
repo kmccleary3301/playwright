@@ -1,0 +1,177 @@
+/**
+ * Copyright (c) Microsoft Corporation.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import fs from 'fs';
+import path from 'path';
+
+import { PNG } from 'pngjs';
+import * as z from 'zod';
+
+import { defineTabTool } from './tool';
+import { outputDir as outputDirForClient } from './context';
+
+
+import type { Context } from './context';
+import type * as playwright from '../../..';
+
+function resolveMaybeRelative(context: Context, inputPath: string): string {
+  if (path.isAbsolute(inputPath))
+    return inputPath;
+  const cwdPath = path.resolve(process.cwd(), inputPath);
+  if (fs.existsSync(cwdPath))
+    return cwdPath;
+  const outDir = outputDirForClient(context.options);
+  return path.resolve(outDir, inputPath);
+}
+
+function comparePixels(actual: Buffer, expected: Buffer, diff: Buffer, width: number, height: number, threshold: number): number {
+  let diffPixels = 0;
+  for (let i = 0; i < width * height; i++) {
+    const offset = i * 4;
+    const redDelta = Math.abs(actual[offset] - expected[offset]);
+    const greenDelta = Math.abs(actual[offset + 1] - expected[offset + 1]);
+    const blueDelta = Math.abs(actual[offset + 2] - expected[offset + 2]);
+    const alphaDelta = Math.abs(actual[offset + 3] - expected[offset + 3]);
+    const different = redDelta > threshold || greenDelta > threshold || blueDelta > threshold || alphaDelta > threshold;
+    diff[offset] = different ? 255 : actual[offset];
+    diff[offset + 1] = different ? 0 : actual[offset + 1];
+    diff[offset + 2] = different ? 0 : actual[offset + 2];
+    diff[offset + 3] = 255;
+    if (different)
+      diffPixels++;
+  }
+  return diffPixels;
+}
+
+async function withTemporaryStyle(page: playwright.Page, css: string, callback: () => Promise<Buffer>): Promise<Buffer> {
+  const tag = await page.addStyleTag({ content: css });
+  try {
+    return await callback();
+  } finally {
+    await tag.evaluate((node: HTMLElement) => node.remove()).catch(() => {});
+  }
+}
+
+const screenshotDiff = defineTabTool({
+  capability: 'diffs',
+  schema: {
+    name: 'browser_screenshot_diff',
+    title: 'Screenshot diff',
+    description: 'Compare a screenshot against a baseline image',
+    inputSchema: z.object({
+      baselinePath: z.string().describe('Path to baseline PNG image'),
+      element: z.string().optional().describe('Human-readable element description'),
+      ref: z.string().optional().describe('Exact target element reference'),
+      fullPage: z.boolean().optional().describe('Capture full page screenshot (ignored for element screenshots)'),
+      threshold: z.number().optional().describe('Max color delta threshold (default 1.0)'),
+      diffPath: z.string().optional().describe('File path to save diff image'),
+      currentPath: z.string().optional().describe('File path to save current screenshot'),
+      highlight: z.boolean().optional().describe('Highlight target element before screenshot'),
+      disableAnimations: z.boolean().optional().describe('Disable CSS animations/transitions before screenshot'),
+      failOnDiff: z.boolean().optional().describe('Whether to fail when diff is detected (default true)'),
+    }),
+    type: 'assertion',
+  },
+
+  handle: async (tab, params, response) => {
+    if (!!params.element !== !!params.ref)
+      throw new Error('Both element and ref must be provided or neither.');
+
+    const baselinePath = resolveMaybeRelative(tab.context, params.baselinePath);
+    const baselineBuffer = fs.readFileSync(baselinePath);
+    const expected = PNG.sync.read(baselineBuffer);
+
+    const options = {
+      type: 'png',
+      fullPage: params.fullPage === true && !params.ref,
+    } as const;
+
+    const capture = async () => {
+      if (params.ref) {
+        const { locator } = await tab.targetLocator({ target: params.ref, element: params.element || '' });
+        return await locator.screenshot(options);
+      }
+      return await tab.page.screenshot(options);
+    };
+
+    const highlightCSS = '[data-mcp-highlight="true"]{outline:2px solid #ff3b30 !important;outline-offset:2px !important;}';
+    let buffer: Buffer;
+
+    if (params.disableAnimations) {
+      buffer = await withTemporaryStyle(tab.page, '*{animation:none !important;transition:none !important;}', async () => {
+        if (params.highlight && params.ref) {
+          const { locator } = await tab.targetLocator({ target: params.ref, element: params.element || '' });
+          await locator.evaluate((el: HTMLElement) => el.setAttribute('data-mcp-highlight', 'true'));
+          return await withTemporaryStyle(tab.page, highlightCSS, async () => {
+            const image = await capture();
+            await locator.evaluate((el: HTMLElement) => el.removeAttribute('data-mcp-highlight'));
+            return image;
+          });
+        }
+        return await capture();
+      });
+    } else if (params.highlight && params.ref) {
+      const { locator } = await tab.targetLocator({ target: params.ref, element: params.element || '' });
+      buffer = await withTemporaryStyle(tab.page, highlightCSS, async () => {
+        await locator.evaluate((el: HTMLElement) => el.setAttribute('data-mcp-highlight', 'true'));
+        const image = await capture();
+        await locator.evaluate((el: HTMLElement) => el.removeAttribute('data-mcp-highlight'));
+        return image;
+      });
+    } else {
+      buffer = await capture();
+    }
+
+    const actual = PNG.sync.read(buffer);
+    if (expected.width !== actual.width || expected.height !== actual.height) {
+      const message = `Screenshot size mismatch. Expected ${expected.width}x${expected.height}, got ${actual.width}x${actual.height}.`;
+      if (params.currentPath) {
+        const currentFile = await response.resolveClientFilename(params.currentPath);
+        fs.writeFileSync(currentFile, buffer);
+      }
+      response.addError(message);
+      return;
+    }
+
+    const diffImage = new PNG({ width: expected.width, height: expected.height });
+    const diffPixels = comparePixels(actual.data, expected.data, diffImage.data, expected.width, expected.height, params.threshold ?? 1.0);
+    const totalPixels = expected.width * expected.height;
+    const diffPercent = (diffPixels / totalPixels) * 100;
+
+    if (params.currentPath) {
+      const currentFile = await response.resolveClientFilename(params.currentPath);
+      fs.writeFileSync(currentFile, buffer);
+    }
+
+    if (diffPixels === 0) {
+      response.addTextResult('Screenshot matches baseline.');
+      return;
+    }
+
+    if (params.diffPath) {
+      const diffFile = await response.resolveClientFilename(params.diffPath);
+      fs.writeFileSync(diffFile, PNG.sync.write(diffImage));
+    }
+
+    const message = `Screenshot differs from baseline: ${diffPixels} pixels (${diffPercent.toFixed(2)}%).`;
+    if (params.failOnDiff !== false)
+      response.addError(message);
+    else
+      response.addTextResult(message);
+  }
+});
+
+export default [screenshotDiff];

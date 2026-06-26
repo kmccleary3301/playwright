@@ -21,6 +21,7 @@ import console from './console';
 import cookies from './cookies';
 import devtools from './devtools';
 import dialogs from './dialogs';
+import diff from './diff';
 import evaluate from './evaluate';
 import files from './files';
 import form from './form';
@@ -29,11 +30,15 @@ import mouse from './mouse';
 import navigate from './navigate';
 import network from './network';
 import pdf from './pdf';
+import perf from './perf';
 import route from './route';
 import runCode from './runCode';
+import scenario from './scenario';
 import snapshot from './snapshot';
 import screenshot from './screenshot';
+import screenshotDiff from './screenshotDiff';
 import storage from './storage';
+import style from './style';
 import tabs from './tabs';
 import tracing from './tracing';
 import verify from './verify';
@@ -51,6 +56,7 @@ export const browserTools: Tool<any>[] = [
   ...cookies,
   ...devtools,
   ...dialogs,
+  ...diff,
   ...evaluate,
   ...files,
   ...form,
@@ -59,11 +65,15 @@ export const browserTools: Tool<any>[] = [
   ...navigate,
   ...network,
   ...pdf,
+  ...perf,
   ...route,
   ...runCode,
+  ...scenario,
   ...screenshot,
+  ...screenshotDiff,
   ...snapshot,
   ...storage,
+  ...style,
   ...tabs,
   ...tracing,
   ...verify,
