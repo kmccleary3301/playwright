@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-import { MultiMap } from '@isomorphic/multimap';
 import { assert } from '@isomorphic/assert';
 import { helper } from './helper';
 
@@ -25,7 +24,6 @@ import type { Page } from './page';
 import type { Progress } from './progress';
 import type * as types from './types';
 import type { Rect } from '@isomorphic/types';
-import type { ParsedSelector } from '@isomorphic/selectorParser';
 
 
 declare global {
@@ -35,7 +33,7 @@ declare global {
 }
 
 export type ScreenshotOptions = {
-  type?: 'png' | 'jpeg';
+  type?: 'png' | 'jpeg' | 'webp';
   quality?: number;
   omitBackground?: boolean;
   animations?: 'disabled' | 'allow';
@@ -223,7 +221,7 @@ export class Screenshotter {
     });
   }
 
-  async screenshotElement(progress: Progress, handle: dom.ElementHandle, options: ScreenshotOptions): Promise<Buffer> {
+  async screenshotElement(progress: Progress, handle: dom.ElementHandle, options: ScreenshotOptions, frameVisible: boolean): Promise<Buffer> {
     const format = validateScreenshotOptions(options);
     return this._queue._postTask(async () => {
       progress.log('taking element screenshot');
@@ -231,7 +229,7 @@ export class Screenshotter {
 
       await this._preparePageForScreenshot(progress, handle._frame, options.style, options.caret !== 'initial', options.animations === 'disabled');
       try {
-        await handle._waitAndScrollIntoViewIfNeeded(progress, true /* waitForVisible */);
+        await handle._waitAndScrollIntoViewIfNeeded(progress, true /* waitForVisible */, frameVisible);
 
         const boundingBox = await handle.boundingBox(progress);
         assert(boundingBox, 'Node is either not visible or not an HTMLElement');
@@ -275,21 +273,14 @@ export class Screenshotter {
     if (!options.mask || !options.mask.length)
       return () => Promise.resolve();
 
-    const framesToParsedSelectors: MultiMap<Frame, ParsedSelector> = new MultiMap();
-    await progress.race(Promise.all((options.mask || []).map(async ({ frame, selector }) => {
-      const pair = await frame.selectors.resolveFrameForSelector(selector);
-      if (pair)
-        framesToParsedSelectors.set(pair.frame, pair.info.parsed);
-    })));
-
-    const frames = [...framesToParsedSelectors.keys()];
-    const cleanup = async () => {
-      await Promise.all(frames.map(frame => frame.hideHighlight()));
-    };
-
+    const cleanup = () => this._page.highlightController.hideHighlights();
     try {
-      const promises = frames.map(frame => frame.maskSelectors(framesToParsedSelectors.get(frame), options.maskColor || '#F0F'));
-      await progress.race(Promise.all(promises));
+      await progress.race(this._page.highlightController.hideHighlights());
+      await progress.race(Promise.all((options.mask || []).map(async ({ frame, selector }) => {
+        await frame.selectors.callOnSelector({ selector, strict: false }, ({ injected, elements }, color) => {
+          injected.addMaskedElements(elements, color);
+        }, options.maskColor || '#F0F');
+      })));
       return cleanup;
     } catch (error) {
       cleanup().catch(() => {});
@@ -297,17 +288,18 @@ export class Screenshotter {
     }
   }
 
-  private async _screenshot(progress: Progress, format: 'png' | 'jpeg', documentRect: types.Rect | undefined, viewportRect: types.Rect | undefined, fitsViewport: boolean, options: ScreenshotOptions): Promise<Buffer> {
+  private async _screenshot(progress: Progress, format: 'png' | 'jpeg' | 'webp', documentRect: types.Rect | undefined, viewportRect: types.Rect | undefined, fitsViewport: boolean, options: ScreenshotOptions): Promise<Buffer> {
     if ((options as any).__testHookBeforeScreenshot)
       await progress.race((options as any).__testHookBeforeScreenshot());
 
-    const shouldSetDefaultBackground = options.omitBackground && format === 'png';
+    // jpeg does not support transparency.
+    const shouldSetDefaultBackground = options.omitBackground && format !== 'jpeg';
     if (shouldSetDefaultBackground)
       await progress.race(this._page.delegate.setBackgroundColor({ r: 0, g: 0, b: 0, a: 0 }));
     const cleanupHighlight = await this._maskElements(progress, options);
 
     try {
-      const quality = format === 'jpeg' ? options.quality ?? 80 : undefined;
+      const quality = format === 'jpeg' ? options.quality ?? 80 : format === 'webp' ? options.quality ?? 100 : undefined;
       const buffer = await this._page.delegate.takeScreenshot(progress, format, documentRect, viewportRect, quality, fitsViewport, options.scale || 'device');
       await progress.race(cleanupHighlight());
       if (shouldSetDefaultBackground)
@@ -353,12 +345,12 @@ function trimClipToSize(clip: types.Rect, size: types.Size): types.Rect {
   return result;
 }
 
-export function validateScreenshotOptions(options: ScreenshotOptions): 'png' | 'jpeg' {
-  let format: 'png' | 'jpeg' | null = null;
+export function validateScreenshotOptions(options: ScreenshotOptions): 'png' | 'jpeg' | 'webp' {
+  let format: 'png' | 'jpeg' | 'webp' | null = null;
   // options.type takes precedence over inferring the type from options.path
   // because it may be a 0-length file with no extension created beforehand (i.e. as a temp file).
   if (options.type) {
-    assert(options.type === 'png' || options.type === 'jpeg', 'Unknown options.type value: ' + options.type);
+    assert(options.type === 'png' || options.type === 'jpeg' || options.type === 'webp', 'Unknown options.type value: ' + options.type);
     format = options.type;
   }
 
@@ -366,7 +358,7 @@ export function validateScreenshotOptions(options: ScreenshotOptions): 'png' | '
     format = 'png';
 
   if (options.quality !== undefined) {
-    assert(format === 'jpeg', 'options.quality is unsupported for the ' + format + ' screenshots');
+    assert(format !== 'png', 'options.quality is unsupported for the ' + format + ' screenshots');
     assert(typeof options.quality === 'number', 'Expected options.quality to be a number but found ' + (typeof options.quality));
     assert(Number.isInteger(options.quality), 'Expected options.quality to be an integer');
     assert(options.quality >= 0 && options.quality <= 100, 'Expected options.quality to be between 0 and 100 (inclusive), got ' + options.quality);

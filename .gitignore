@@ -1,5 +1,6 @@
 node_modules/
 /test-results/
+/coverage/
 /tests/coverage-report
 .local-browsers/
 /.dev_profile*
@@ -12,7 +13,6 @@ DEPS.true
 .idea
 yarn.lock
 /packages/playwright-core/src/generated
-/packages/playwright-ct-core/src/generated
 packages/*/lib/
 drivers/
 .android-sdk/
@@ -41,3 +41,4 @@ test-results
 playwright.env
 /firefox/
 .playwright/
+.npmrc

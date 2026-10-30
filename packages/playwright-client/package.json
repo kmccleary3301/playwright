@@ -9,7 +9,7 @@
   },
   "homepage": "https://playwright.dev",
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "author": {
     "name": "Microsoft Corporation"
@@ -24,6 +24,6 @@
     "./package.json": "./package.json"
   },
   "dependencies": {
-    "playwright-core": "1.62.0-next"
+    "playwright-core": "1.64.1"
   }
 }

@@ -795,6 +795,31 @@ test('step attachments are referentially equal to result attachments', async ({ 
   ]);
 });
 
+test('step annotations are reported in onStepEnd', async ({ runInlineTest }) => {
+  class TestReporter implements Reporter {
+    onStepEnd(test: TestCase, result: TestResult, step: TestStep) {
+      if (step.category === 'test.step')
+        console.log('%%%', JSON.stringify(step.annotations));
+    }
+  }
+  const result = await runInlineTest({
+    'reporter.ts': `module.exports = ${TestReporter.toString()}`,
+    'playwright.config.ts': `module.exports = { reporter: './reporter' };`,
+    'a.spec.ts': `
+      import { test } from '@playwright/test';
+      test('test', async () => {
+        await test.step('step', async stepInfo => {
+          stepInfo.annotations.push({ type: 'expected-result', description: 'step passes' });
+        });
+      });
+    `,
+  }, { 'reporter': '', 'workers': 1 });
+
+  expect(result.outputLines).toEqual([
+    JSON.stringify([{ type: 'expected-result', description: 'step passes' }]),
+  ]);
+});
+
 test('step.attach attachments are reported on right steps', async ({ runInlineTest }) => {
   class TestReporter implements Reporter {
     onStepEnd(test: TestCase, result: TestResult, step: TestStep) {
@@ -986,4 +1011,24 @@ test('AggregateError sub-errors are spread into testInfo.errors', async ({ runIn
     expect.stringMatching(/^FRAME Error: sub a: at .*a\.spec\.ts:18:/),
     expect.stringMatching(/^FRAME Error: sub b: at .*a\.spec\.ts:19:/),
   ]);
+});
+
+test('--add-reporter should append to configured reporters instead of replacing them', async ({ runInlineTest }) => {
+  const result = await runInlineTest({
+    'configured-reporter.js': `
+      module.exports = class { onBegin() { console.log('FROM_CONFIGURED_REPORTER'); } };
+    `,
+    'added-reporter.js': `
+      module.exports = class { onBegin() { console.log('FROM_ADDED_REPORTER'); } };
+    `,
+    'playwright.config.ts': `module.exports = { reporter: [['./configured-reporter.js']] };`,
+    'a.spec.js': `
+      const { test } = require('@playwright/test');
+      test('test', () => {});
+    `,
+  }, { 'workers': 1 }, undefined, { additionalArgs: ['--add-reporter=./added-reporter.js'] });
+
+  expect(result.exitCode).toBe(0);
+  expect(result.output).toContain('FROM_CONFIGURED_REPORTER');
+  expect(result.output).toContain('FROM_ADDED_REPORTER');
 });

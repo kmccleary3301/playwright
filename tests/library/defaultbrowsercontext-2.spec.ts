@@ -145,9 +145,8 @@ it('should create userDataDir if it does not exist', async ({ createUserDataDir,
 
 it('should goto about:blank on relaunched persistent context', {
   annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/41216' },
-}, async ({ browserType, createUserDataDir, browserName }) => {
-  it.fixme(browserName === 'firefox');
-  it.slow();
+}, async ({ browserType, createUserDataDir, browserName, isBidi }) => {
+  it.fixme(browserName === 'firefox' && !isBidi);
 
   const userDataDir = await createUserDataDir();
 
@@ -283,6 +282,27 @@ it('dialog.accept should work', {
   await context.close();
 });
 
+it('CacheStorage entry should survive page.reload()', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/41618' }
+}, async ({ launchPersistent, server }) => {
+  const { context, page } = await launchPersistent();
+  await page.goto(server.EMPTY_PAGE);
+  await page.evaluate(async () => {
+    const cache = await caches.open('repro-cache');
+    await cache.put('/meta', new Response('payload'));
+  });
+
+  await page.reload();
+
+  const after = await page.evaluate(async () => {
+    const cache = await caches.open('repro-cache');
+    const resp = await cache.match('/meta');
+    return resp ? await resp.text() : null;
+  });
+  expect(after).toBe('payload');
+  await context.close();
+});
+
 it('exposes browser', async ({ launchPersistent }) => {
   const { context } = await launchPersistent();
   const browser = context.browser();
@@ -293,5 +313,19 @@ it('exposes browser', async ({ launchPersistent }) => {
   await browser.close();
   expect(context.pages().length).toBe(0);
   // Next line should not throw.
+  await context.close();
+});
+
+it('should support storage.getDirectory()', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/18235' }
+}, async ({ launchPersistent, server }) => {
+  const { context } = await launchPersistent();
+  const page = await context.newPage();
+  await page.goto(server.EMPTY_PAGE);
+  const name = await page.evaluate(async () => {
+    const dir = await navigator.storage.getDirectory();
+    return dir.name;
+  }).catch(e => e);
+  expect(name).toBe('');
   await context.close();
 });

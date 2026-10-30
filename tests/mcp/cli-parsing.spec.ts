@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { test, expect } from './cli-fixtures';
+import { test, expect, eventsPage } from './cli-fixtures';
 
 test('unknown option', async ({ cli, server }) => {
   const { error, exitCode } = await cli('open', '--some-option', 'value', 'about:blank');
@@ -57,6 +57,13 @@ test('missing argument', async ({ cli, server }) => {
   expect(error).toContain(`error: 'key' argument: expected string, received undefined`);
 });
 
+test('missing variadic argument', { annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42047' } }, async ({ cli, server }) => {
+  await cli('open', server.HELLO_WORLD);
+  const { error, exitCode } = await cli('upload');
+  expect(exitCode).toBe(1);
+  expect(error).toContain(`error: 'files' argument: expected string, received undefined`);
+});
+
 test('wrong argument type', async ({ cli, server }) => {
   await cli('open', server.HELLO_WORLD);
   const { error, exitCode } = await cli('mousemove', '12', 'foo');
@@ -64,6 +71,18 @@ test('wrong argument type', async ({ cli, server }) => {
   expect(error).toContain(`error: 'y' argument: expected number, received 'foo'`);
   const press = await cli('press', '5');
   expect(press.exitCode).toBe(0);
+});
+
+test('negative number arguments', { annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42321' } }, async ({ cli, server }) => {
+  server.setContent('/', eventsPage, 'text/html');
+  await cli('open', server.PREFIX);
+  await cli('mousemove', '50', '50');
+
+  expect((await cli('mousewheel', '0', '-100')).exitCode).toBe(0);
+  await expect.poll(() => cli('snapshot').then(result => result.inlineSnapshot)).toContain('wheel 0 -100');
+
+  const { error } = await cli('mousewheel', '-.5');
+  expect(error).toContain(`error: 'dy' argument: expected number, received 'undefined'`);
 });
 
 test('should preserve leading zeros in string arguments', async ({ cli, server }) => {

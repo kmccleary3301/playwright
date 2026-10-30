@@ -19,9 +19,13 @@ import type { APIRequestContext, Browser, BrowserContext, BrowserContextOptions,
 export * from 'playwright-core';
 
 export type BlobReporterOptions = { outputDir?: string, fileName?: string };
-export type ListReporterOptions = { printSteps?: boolean, printFailuresInline?: boolean };
-export type JUnitReporterOptions = { outputFile?: string, stripANSIControlSequences?: boolean, includeProjectInTestName?: boolean, includeRetries?: boolean };
+export type DotReporterOptions = { omitTags?: boolean };
+export type LineReporterOptions = { omitTags?: boolean };
+export type ListReporterOptions = { printSteps?: boolean, printFailuresInline?: boolean, omitTags?: boolean };
+export type GitHubReporterOptions = { omitTags?: boolean };
+export type JUnitReporterOptions = { outputFile?: string, stripANSIControlSequences?: boolean, includeProjectInTestName?: boolean, includeRetries?: boolean, omitTags?: boolean };
 export type JsonReporterOptions = { outputFile?: string };
+export type PerfettoReporterOptions = { outputFile?: string };
 export type HtmlReporterOptions = {
   outputFolder?: string;
   open?: 'always' | 'never' | 'on-failure';
@@ -32,16 +36,18 @@ export type HtmlReporterOptions = {
   noSnippets?: boolean;
   noCopyPrompt?: boolean;
   doNotInlineAssets?: boolean;
+  mergeFiles?: boolean;
 };
 
 export type ReporterDescription = Readonly<
   ['blob'] | ['blob', BlobReporterOptions] |
-  ['dot'] |
-  ['line'] |
+  ['dot'] | ['dot', DotReporterOptions] |
+  ['line'] | ['line', LineReporterOptions] |
   ['list'] | ['list', ListReporterOptions] |
-  ['github'] |
+  ['github'] | ['github', GitHubReporterOptions] |
   ['junit'] | ['junit', JUnitReporterOptions] |
   ['json'] | ['json', JsonReporterOptions] |
+  ['perfetto'] | ['perfetto', PerfettoReporterOptions] |
   ['html'] | ['html', HtmlReporterOptions] |
   ['null'] |
   [string] | [string, any]
@@ -130,6 +136,40 @@ interface TestProject<TestArgs = {}, WorkerArgs = {}> {
    */
   use?: UseOptions<TestArgs, WorkerArgs>;
   /**
+   * Whether the project runs when no `--project` command line option is passed. Defaults to `true`.
+   *
+   * To run a project with `default: false`, select it with the `--project` command line option.
+   *
+   * A project with `default: false` still runs when another running project lists it in
+   * [testProject.dependencies](https://playwright.dev/docs/api/class-testproject#test-project-dependencies) or
+   * [testProject.teardown](https://playwright.dev/docs/api/class-testproject#test-project-teardown).
+   *
+   * **Usage**
+   *
+   * ```js
+   * // playwright.config.ts
+   * import { defineConfig } from '@playwright/test';
+   *
+   * export default defineConfig({
+   *   projects: [
+   *     {
+   *       name: 'chromium',
+   *       use: devices['Desktop Chrome'],
+   *     },
+   *     {
+   *       name: 'slow',
+   *       testDir: './slow-tests',
+   *       default: false,
+   *     },
+   *   ],
+   * });
+   * ```
+   *
+   * Now `npx playwright test` only runs `chromium`, while `npx playwright test --project=slow` runs `slow`.
+   */
+  default?: boolean;
+
+  /**
    * List of projects that need to run before any test in this project runs. Dependencies can be useful for configuring
    * the global setup actions in a way that every action is in a form of a test. Passing `--no-deps` argument ignores
    * the dependencies and behaves as if they were not specified.
@@ -197,13 +237,14 @@ interface TestProject<TestArgs = {}, WorkerArgs = {}> {
       threshold?: number;
 
       /**
-       * an acceptable amount of pixels that could be different, unset by default.
+       * an acceptable amount of pixels that could be different, unset by default. Note that `threshold` defines which
+       * pixels are considered different.
        */
       maxDiffPixels?: number;
 
       /**
        * an acceptable ratio of pixels that are different to the total amount of pixels, between `0` and `1` , unset by
-       * default.
+       * default. Note that `threshold` defines which pixels are considered different.
        */
       maxDiffPixelRatio?: number;
 
@@ -230,6 +271,12 @@ interface TestProject<TestArgs = {}, WorkerArgs = {}> {
        * [page.screenshot([options])](https://playwright.dev/docs/api/class-page#page-screenshot).
        */
       stylePath?: string|Array<string>;
+
+      /**
+       * Format of the screenshots taken when the snapshot name is omitted, defaults to `"png"`. Snapshots with an explicit
+       * name use the format matching their `.png` or `.webp` extension.
+       */
+      type?: "png"|"webp";
 
       /**
        * A template controlling location of the screenshots. See
@@ -281,13 +328,14 @@ interface TestProject<TestArgs = {}, WorkerArgs = {}> {
       threshold?: number;
 
       /**
-       * an acceptable amount of pixels that could be different, unset by default.
+       * an acceptable amount of pixels that could be different, unset by default. Note that `threshold` defines which
+       * pixels are considered different.
        */
       maxDiffPixels?: number;
 
       /**
        * an acceptable ratio of pixels that are different to the total amount of pixels, between `0` and `1` , unset by
-       * default.
+       * default. Note that `threshold` defines which pixels are considered different.
        */
       maxDiffPixelRatio?: number;
     };
@@ -913,7 +961,7 @@ interface TestConfig<TestArgs = {}, WorkerArgs = {}> {
    * ```
    *
    */
-  reporter?: LiteralUnion<'list'|'dot'|'line'|'github'|'json'|'junit'|'null'|'html', string> | ReporterDescription[];
+  reporter?: LiteralUnion<'list'|'dot'|'line'|'github'|'json'|'junit'|'null'|'html'|'blob'|'perfetto', string> | ReporterDescription[];
   /**
    * Global options for all tests, for example
    * [testOptions.browserName](https://playwright.dev/docs/api/class-testoptions#test-options-browser-name). Learn more
@@ -1149,13 +1197,14 @@ interface TestConfig<TestArgs = {}, WorkerArgs = {}> {
       caret?: "hide"|"initial";
 
       /**
-       * An acceptable amount of pixels that could be different, unset by default.
+       * An acceptable amount of pixels that could be different, unset by default. Note that `threshold` defines which
+       * pixels are considered different.
        */
       maxDiffPixels?: number;
 
       /**
        * An acceptable ratio of pixels that are different to the total amount of pixels, between `0` and `1` , unset by
-       * default.
+       * default. Note that `threshold` defines which pixels are considered different.
        */
       maxDiffPixelRatio?: number;
 
@@ -1177,6 +1226,12 @@ interface TestConfig<TestArgs = {}, WorkerArgs = {}> {
        * [YIQ color space](https://en.wikipedia.org/wiki/YIQ) and defaults `threshold` value to `0.2`.
        */
       threshold?: number;
+
+      /**
+       * Format of the screenshots taken when the snapshot name is omitted, defaults to `"png"`. Snapshots with an explicit
+       * name use the format matching their `.png` or `.webp` extension.
+       */
+      type?: "png"|"webp";
 
       /**
        * A template controlling location of the screenshots. See
@@ -1214,13 +1269,14 @@ interface TestConfig<TestArgs = {}, WorkerArgs = {}> {
      */
     toMatchSnapshot?: {
       /**
-       * An acceptable amount of pixels that could be different, unset by default.
+       * An acceptable amount of pixels that could be different, unset by default. Note that `threshold` defines which
+       * pixels are considered different.
        */
       maxDiffPixels?: number;
 
       /**
        * An acceptable ratio of pixels that are different to the total amount of pixels, between `0` and `1` , unset by
-       * default.
+       * default. Note that `threshold` defines which pixels are considered different.
        */
       maxDiffPixelRatio?: number;
 
@@ -1644,8 +1700,9 @@ interface TestConfig<TestArgs = {}, WorkerArgs = {}> {
    * Controls when failed tests are retried. Defaults to `'immediate'`.
    * - `'immediate'` - A failed test is retried as soon as a worker is available, interleaved with the rest of the
    *   run. This is the default.
-   * - `'deferred'` - Retries are run only after all tests have had their first attempt, in parallel up to the
-   *   configured number of [workers](#test-config-workers).
+   * - `'isolated'` - Retries are run at the end, after all other tests have finished, one by one in a single worker.
+   *   This minimizes the interference between retried tests and the rest of the suite, at the expense of the total
+   *   run time.
    *
    * Learn more about [test retries](https://playwright.dev/docs/test-retries#retries).
    *
@@ -1657,12 +1714,12 @@ interface TestConfig<TestArgs = {}, WorkerArgs = {}> {
    *
    * export default defineConfig({
    *   retries: 2,
-   *   retryStrategy: 'deferred',
+   *   retryStrategy: 'isolated',
    * });
    * ```
    *
    */
-  retryStrategy?: "immediate"|"deferred";
+  retryStrategy?: "immediate"|"isolated";
 
   /**
    * Shard tests and execute only the selected shard. Specify in the one-based form like `{ total: 5, current: 2 }`.
@@ -1960,13 +2017,15 @@ interface TestConfig<TestArgs = {}, WorkerArgs = {}> {
   tsconfig?: string;
 
   /**
-   * Whether to update expected snapshots with the actual results produced by the test run. Defaults to `'missing'`.
+   * Whether to update expected snapshots with the actual results produced by the test run. Defaults to `'default'`.
    * - `'all'` - All tests that are executed will update snapshots.
    * - `'changed'` - All tests that are executed will update snapshots that did not match. Matching snapshots will not
    *   be updated. Also creates missing snapshots.
    * - `'missing'` - Missing snapshots are created, for example when authoring a new test and running it for the first
-   *   time. This is the default.
+   *   time. Tests that only create missing snapshots pass.
    * - `'none'` - No snapshots are updated.
+   * - `'default'` - Missing snapshots are created, but the tests that create them fail, so that the run does not
+   *   silently pass in CI. This is the default.
    *
    * Learn more about [snapshots](https://playwright.dev/docs/test-snapshots).
    *
@@ -1977,12 +2036,12 @@ interface TestConfig<TestArgs = {}, WorkerArgs = {}> {
    * import { defineConfig } from '@playwright/test';
    *
    * export default defineConfig({
-   *   updateSnapshots: 'missing',
+   *   updateSnapshots: 'default',
    * });
    * ```
    *
    */
-  updateSnapshots?: "all"|"changed"|"missing"|"none";
+  updateSnapshots?: "all"|"changed"|"missing"|"none"|"default";
 
   /**
    * Defines how to update snapshots in the source code.
@@ -2060,6 +2119,13 @@ export interface FullConfig<TestArgs = {}, WorkerArgs = {}> {
    * [testConfig.failOnFlakyTests](https://playwright.dev/docs/api/class-testconfig#test-config-fail-on-flaky-tests).
    */
   failOnFlakyTests: boolean;
+
+  /**
+   * List of projects that were selected to run, after applying the `--project` command line filter. When no filter is
+   * specified, this is the same as
+   * [fullConfig.projects](https://playwright.dev/docs/api/class-fullconfig#full-config-projects).
+   */
+  filteredProjects: Array<FullProject>;
 
   /**
    * See [testConfig.forbidOnly](https://playwright.dev/docs/api/class-testconfig#test-config-forbid-only).
@@ -2159,7 +2225,7 @@ export interface FullConfig<TestArgs = {}, WorkerArgs = {}> {
   /**
    * See [testConfig.updateSnapshots](https://playwright.dev/docs/api/class-testconfig#test-config-update-snapshots).
    */
-  updateSnapshots: "all"|"changed"|"missing"|"none";
+  updateSnapshots: "all"|"changed"|"missing"|"none"|"default";
 
   /**
    * See
@@ -2717,6 +2783,7 @@ export type TestAnnotation = TestDetailsAnnotation & {
 export type TestDetails = {
   tag?: string | string[];
   annotation?: TestDetailsAnnotation | TestDetailsAnnotation[];
+  lock?: string | string[];
 }
 
 type TestBody<TestArgs> = (args: TestArgs, testInfo: TestInfo) => Promise<unknown> | unknown;
@@ -2808,6 +2875,26 @@ export interface TestType<TestArgs extends {}, WorkerArgs extends {}> {
    * [testInfo.annotations](https://playwright.dev/docs/api/class-testinfo#test-info-annotations).
    *
    * Learn more about [test annotations](https://playwright.dev/docs/test-annotations).
+   *
+   * **Locks**
+   *
+   * You can declare named locks to prevent specific tests from running at the same time, while all other tests continue
+   * to run in parallel. Tests that share a lock name never run concurrently, even when they are declared in different
+   * files or belong to different [projects](https://playwright.dev/docs/test-projects). This is useful when a few tests access a shared
+   * resource that does not support concurrent access.
+   *
+   * ```js
+   * import { test, expect } from '@playwright/test';
+   *
+   * test('update user settings', {
+   *   lock: 'user-settings',
+   * }, async ({ page }) => {
+   *   // This test never runs concurrently with other tests
+   *   // that declare the 'user-settings' lock.
+   * });
+   * ```
+   *
+   * Learn more about [test locks](https://playwright.dev/docs/test-parallel#test-locks).
    * @param title Test title.
    * @param details Additional test details.
    * @param body Test body that takes one or two arguments: an object with fixtures and optional
@@ -2885,6 +2972,26 @@ export interface TestType<TestArgs extends {}, WorkerArgs extends {}> {
    * [testInfo.annotations](https://playwright.dev/docs/api/class-testinfo#test-info-annotations).
    *
    * Learn more about [test annotations](https://playwright.dev/docs/test-annotations).
+   *
+   * **Locks**
+   *
+   * You can declare named locks to prevent specific tests from running at the same time, while all other tests continue
+   * to run in parallel. Tests that share a lock name never run concurrently, even when they are declared in different
+   * files or belong to different [projects](https://playwright.dev/docs/test-projects). This is useful when a few tests access a shared
+   * resource that does not support concurrent access.
+   *
+   * ```js
+   * import { test, expect } from '@playwright/test';
+   *
+   * test('update user settings', {
+   *   lock: 'user-settings',
+   * }, async ({ page }) => {
+   *   // This test never runs concurrently with other tests
+   *   // that declare the 'user-settings' lock.
+   * });
+   * ```
+   *
+   * Learn more about [test locks](https://playwright.dev/docs/test-parallel#test-locks).
    * @param title Test title.
    * @param details Additional test details.
    * @param body Test body that takes one or two arguments: an object with fixtures and optional
@@ -3021,6 +3128,28 @@ export interface TestType<TestArgs extends {}, WorkerArgs extends {}> {
    * ```
    *
    * Learn more about [test annotations](https://playwright.dev/docs/test-annotations).
+   *
+   * **Locks**
+   *
+   * You can declare named locks for all tests in a group by providing additional details. Tests that share a lock name
+   * never run concurrently. Learn more about [test locks](https://playwright.dev/docs/test-parallel#test-locks).
+   *
+   * ```js
+   * import { test, expect } from '@playwright/test';
+   *
+   * test.describe('two tests with a lock', {
+   *   lock: 'user-settings',
+   * }, () => {
+   *   test('one', async ({ page }) => {
+   *     // ...
+   *   });
+   *
+   *   test('two', async ({ page }) => {
+   *     // ...
+   *   });
+   * });
+   * ```
+   *
    * @param title Group title.
    * @param details Additional details for all tests in the group.
    * @param callback A callback that is run immediately when calling
@@ -3116,6 +3245,28 @@ export interface TestType<TestArgs extends {}, WorkerArgs extends {}> {
      * ```
      *
      * Learn more about [test annotations](https://playwright.dev/docs/test-annotations).
+     *
+     * **Locks**
+     *
+     * You can declare named locks for all tests in a group by providing additional details. Tests that share a lock name
+     * never run concurrently. Learn more about [test locks](https://playwright.dev/docs/test-parallel#test-locks).
+     *
+     * ```js
+     * import { test, expect } from '@playwright/test';
+     *
+     * test.describe('two tests with a lock', {
+     *   lock: 'user-settings',
+     * }, () => {
+     *   test('one', async ({ page }) => {
+     *     // ...
+     *   });
+     *
+     *   test('two', async ({ page }) => {
+     *     // ...
+     *   });
+     * });
+     * ```
+     *
      * @param title Group title.
      * @param details Additional details for all tests in the group.
      * @param callback A callback that is run immediately when calling
@@ -3211,6 +3362,28 @@ export interface TestType<TestArgs extends {}, WorkerArgs extends {}> {
      * ```
      *
      * Learn more about [test annotations](https://playwright.dev/docs/test-annotations).
+     *
+     * **Locks**
+     *
+     * You can declare named locks for all tests in a group by providing additional details. Tests that share a lock name
+     * never run concurrently. Learn more about [test locks](https://playwright.dev/docs/test-parallel#test-locks).
+     *
+     * ```js
+     * import { test, expect } from '@playwright/test';
+     *
+     * test.describe('two tests with a lock', {
+     *   lock: 'user-settings',
+     * }, () => {
+     *   test('one', async ({ page }) => {
+     *     // ...
+     *   });
+     *
+     *   test('two', async ({ page }) => {
+     *     // ...
+     *   });
+     * });
+     * ```
+     *
      * @param title Group title.
      * @param details Additional details for all tests in the group.
      * @param callback A callback that is run immediately when calling
@@ -3306,6 +3479,28 @@ export interface TestType<TestArgs extends {}, WorkerArgs extends {}> {
      * ```
      *
      * Learn more about [test annotations](https://playwright.dev/docs/test-annotations).
+     *
+     * **Locks**
+     *
+     * You can declare named locks for all tests in a group by providing additional details. Tests that share a lock name
+     * never run concurrently. Learn more about [test locks](https://playwright.dev/docs/test-parallel#test-locks).
+     *
+     * ```js
+     * import { test, expect } from '@playwright/test';
+     *
+     * test.describe('two tests with a lock', {
+     *   lock: 'user-settings',
+     * }, () => {
+     *   test('one', async ({ page }) => {
+     *     // ...
+     *   });
+     *
+     *   test('two', async ({ page }) => {
+     *     // ...
+     *   });
+     * });
+     * ```
+     *
      * @param title Group title.
      * @param details Additional details for all tests in the group.
      * @param callback A callback that is run immediately when calling
@@ -4235,6 +4430,14 @@ export interface TestType<TestArgs extends {}, WorkerArgs extends {}> {
      *   test('runs second', async ({ page }) => {});
      *   ```
      *
+     * - Declaring locks for all tests in a scope.
+     *
+     *   ```js
+     *   test.describe.configure({ lock: 'user-settings' });
+     *   test('update user settings', async ({ page }) => {});
+     *   test('reset user settings', async ({ page }) => {});
+     *   ```
+     *
      * - Run multiple describes in parallel, but tests inside each describe in order.
      *
      *   ```js
@@ -4255,7 +4458,7 @@ export interface TestType<TestArgs extends {}, WorkerArgs extends {}> {
      *
      * @param options
      */
-    configure: (options: { mode?: 'default' | 'parallel' | 'serial', retries?: number, timeout?: number }) => void;
+    configure: (options: { mode?: 'default' | 'parallel' | 'serial', retries?: number, timeout?: number, lock?: string | string[] }) => void;
   };
 
   /**
@@ -6591,7 +6794,7 @@ export interface TestType<TestArgs extends {}, WorkerArgs extends {}> {
      * @param body Step body.
      * @param options
      */
-    <T>(title: string, body: (step: TestStepInfo) => T | Promise<T>, options?: { box?: boolean, location?: Location, timeout?: number }): Promise<T>;
+    <T>(title: string, body: (step: TestStepInfo) => T | Promise<T>, options?: { box?: boolean, location?: Location, timeout?: number, params?: { [key: string]: any }, subtitle?: string }): Promise<T>;
     /**
      * Mark a test step as "skip" to temporarily disable its execution, useful for steps that are currently failing and
      * planned for a near-term fix. Playwright will not run the step. See also
@@ -6619,7 +6822,7 @@ export interface TestType<TestArgs extends {}, WorkerArgs extends {}> {
      * @param body Step body.
      * @param options
      */
-    skip(title: string, body: (step: TestStepInfo) => any | Promise<any>, options?: { box?: boolean, location?: Location, timeout?: number }): Promise<void>;
+    skip(title: string, body: (step: TestStepInfo) => any | Promise<any>, options?: { box?: boolean, location?: Location, timeout?: number, params?: { [key: string]: any }, subtitle?: string }): Promise<void>;
   }
   /**
    * `expect` function can be used to create test assertions. Read more about [test assertions](https://playwright.dev/docs/test-assertions).
@@ -6739,6 +6942,9 @@ export type Fixtures<T extends {} = {}, W extends {} = {}, PT extends {} = {}, P
 type BrowserName = 'chromium' | 'firefox' | 'webkit';
 type BrowserChannel = Exclude<LaunchOptions['channel'], undefined>;
 type ColorScheme = Exclude<BrowserContextOptions['colorScheme'], undefined>;
+type Contrast = Exclude<BrowserContextOptions['contrast'], undefined>;
+type ForcedColors = Exclude<BrowserContextOptions['forcedColors'], undefined>;
+type ReducedMotion = Exclude<BrowserContextOptions['reducedMotion'], undefined>;
 type ClientCertificate = Exclude<BrowserContextOptions['clientCertificates'], undefined>[0];
 type ExtraHTTPHeaders = Exclude<BrowserContextOptions['extraHTTPHeaders'], undefined>;
 type Proxy = Exclude<BrowserContextOptions['proxy'], undefined>;
@@ -6937,11 +7143,64 @@ export interface PlaywrightWorkerOptions {
    * [fixtures.browser](https://playwright.dev/docs/api/class-fixtures#fixtures-browser),
    * [fixtures.context](https://playwright.dev/docs/api/class-fixtures#fixtures-context) and
    * [fixtures.page](https://playwright.dev/docs/api/class-fixtures#fixtures-page) use the remote browser instead of
-   * launching a browser locally, and any launch options like
-   * [testOptions.headless](https://playwright.dev/docs/api/class-testoptions#test-options-headless) or
-   * [testOptions.channel](https://playwright.dev/docs/api/class-testoptions#test-options-channel) are ignored.
+   * launching a browser locally.
    */
   connectOptions: ConnectOptions | undefined;
+  /**
+   * **NOTE** This option trades test isolation for speed and is intended for component tests that drive a story gallery. Leave
+   * it unset for end-to-end tests - a fresh browser context per test is one of the core guarantees of Playwright Test.
+   *
+   * **Experimental.** When set to `true`, all tests in a worker process run in a single browser context that is reused
+   * between tests, instead of getting a brand new context per test. Defaults to `false`.
+   *
+   * Between tests, Playwright resets the state that component tests typically touch: it clears cookies, cache, local
+   * storage and IndexedDB of visited origins, unregisters service workers, closes extra pages, removes routes, bindings
+   * and init scripts, and re-applies the configured storage state, viewport and emulation options.
+   *
+   * This reset is best-effort, not a guarantee of isolation. State that is **not** reset includes:
+   * - Permissions granted with
+   *   [browserContext.grantPermissions(permissions[, options])](https://playwright.dev/docs/api/class-browsercontext#browser-context-grant-permissions)
+   *   during a test.
+   * - Runtime changes made through
+   *   [browserContext.setGeolocation(geolocation)](https://playwright.dev/docs/api/class-browsercontext#browser-context-set-geolocation),
+   *   [browserContext.setOffline(offline)](https://playwright.dev/docs/api/class-browsercontext#browser-context-set-offline)
+   *   and
+   *   [browserContext.setExtraHTTPHeaders(headers)](https://playwright.dev/docs/api/class-browsercontext#browser-context-set-extra-http-headers).
+   * - Browsing history, `window.name` and any browser-process-wide state.
+   *
+   * Additional restrictions:
+   * - The option is ignored when
+   *   [testOptions.video](https://playwright.dev/docs/api/class-testoptions#test-options-video) recording is enabled.
+   * - Only a few context options may differ between consecutive tests: `colorScheme`, `forcedColors`,
+   *   `reducedMotion`, `contrast`, `screen`, `userAgent`, `viewport` and `testIdAttribute`. Changing any other option
+   *   in [test.use(options)](https://playwright.dev/docs/api/class-test#test-use), for example `locale` or
+   *   `storageState`, silently forces a fresh context and negates the speedup.
+   * - Do not combine with
+   *   [testOptions.connectOptions](https://playwright.dev/docs/api/class-testoptions#test-options-connect-options)
+   *   pointing multiple workers at a shared browser - workers would compete for the single reusable context.
+   * - `recordHar` in
+   *   [testOptions.contextOptions](https://playwright.dev/docs/api/class-testoptions#test-options-context-options) is
+   *   not supported and produces no HAR file.
+   *
+   * **Usage**
+   *
+   * ```js
+   * // playwright.config.ts
+   * import { defineConfig } from '@playwright/test';
+   *
+   * export default defineConfig({
+   *   projects: [
+   *     {
+   *       name: 'components',
+   *       testDir: './tests/components',
+   *       use: { reuseContext: true },
+   *     },
+   *   ],
+   * });
+   * ```
+   *
+   */
+  reuseContext: boolean;
   /**
    * Whether to automatically capture a screenshot after each test. Defaults to `'off'`.
    * - `'off'`: Do not capture screenshots.
@@ -6999,7 +7258,7 @@ export interface PlaywrightWorkerOptions {
    *
    * Learn more about [recording trace](https://playwright.dev/docs/test-use-options#recording-options).
    */
-  trace: TraceMode | /** deprecated */ 'retry-with-trace' | { mode: TraceMode, snapshots?: boolean, screenshots?: boolean, sources?: boolean, attachments?: boolean };
+  trace: TraceMode | /** deprecated */ 'retry-with-trace' | { mode: TraceMode, snapshots?: boolean | { dom?: boolean, aria?: boolean, screen?: boolean }, screenshots?: boolean, sources?: boolean, attachments?: boolean };
   /**
    * Whether to record video for each test. Defaults to `'off'`. The initial run of a test is the "first run";
    * subsequent runs caused by [retries](https://playwright.dev/docs/test-retries) are "retries".
@@ -7022,9 +7281,13 @@ export interface PlaywrightWorkerOptions {
    * down to fit into 800x800. If `viewport` is not configured explicitly the video size defaults to 800x450. Actual
    * picture of each page will be scaled down if necessary to fit the specified size.
    *
-   * To annotate actions in the video, pass `show` with `action` and/or `test` sub-options. The `action` option controls
-   * visual highlights on interacted elements with an optional `delay` in milliseconds (defaults to `500`). The `test`
-   * option controls which test information is displayed as a status overlay.
+   * To record smoother video of animations and scrolling, pass `fps`, for example `{ mode: 'on', size: { width: 1920,
+   * height: 1080 }, fps: 60 }`. Higher frame rates and sizes use more CPU for encoding. Firefox and WebKit currently
+   * capture up to 25 frames per second.
+   *
+   * To annotate actions in the video, pass `show` with `actions` and/or `test` sub-options. The `actions` option
+   * controls visual highlights on interacted elements, each shown for an optional `duration` in milliseconds (defaults
+   * to `500`). The `test` option controls which test information is displayed as a status overlay.
    *
    * **Usage**
    *
@@ -7041,7 +7304,7 @@ export interface PlaywrightWorkerOptions {
    *
    * Learn more about [recording video](https://playwright.dev/docs/test-use-options#recording-options).
    */
-  video: VideoMode | /** deprecated */ 'retry-with-video' | { mode: VideoMode, size?: ViewportSize, show?: { actions?: { duration?: number, position?: 'top-left' | 'top' | 'top-right' | 'bottom-left' | 'bottom' | 'bottom-right', fontSize?: number }, test?: { level?: 'file' | 'title' | 'step', position?: 'top-left' | 'top' | 'top-right' | 'bottom-left' | 'bottom' | 'bottom-right', fontSize?: number } } };
+  video: VideoMode | /** deprecated */ 'retry-with-video' | { mode: VideoMode, size?: ViewportSize, fps?: number, show?: { actions?: { duration?: number, position?: 'top-left' | 'top' | 'top-right' | 'bottom-left' | 'bottom' | 'bottom-right', /** @deprecated Use `style.title` instead. */ fontSize?: number, cursor?: 'none' | 'pointer', style?: { point?: string, highlight?: string, title?: string } }, test?: { level?: 'file' | 'title' | 'step', position?: 'top-left' | 'top' | 'top-right' | 'bottom-left' | 'bottom' | 'bottom-right', fontSize?: number } } };
 }
 
 export type ScreenshotMode = 'off' | 'on' | 'only-on-failure' | 'on-first-failure';
@@ -7144,6 +7407,26 @@ export interface PlaywrightTestOptions {
    */
   colorScheme: ColorScheme;
   /**
+   * Emulates `'prefers-contrast'` media feature, supported values are `'no-preference'`, `'more'`. See
+   * [page.emulateMedia([options])](https://playwright.dev/docs/api/class-page#page-emulate-media) for more details.
+   * Passing `null` resets emulation to system defaults. Defaults to `'no-preference'`.
+   *
+   * **Usage**
+   *
+   * ```js
+   * // playwright.config.ts
+   * import { defineConfig } from '@playwright/test';
+   *
+   * export default defineConfig({
+   *   use: {
+   *     contrast: 'more',
+   *   },
+   * });
+   * ```
+   *
+   */
+  contrast: Contrast;
+  /**
    * TLS Client Authentication allows the server to request a client certificate and verify it.
    *
    * **Details**
@@ -7221,6 +7504,26 @@ export interface PlaywrightTestOptions {
    */
   extraHTTPHeaders: ExtraHTTPHeaders | undefined;
   /**
+   * Emulates `'forced-colors'` media feature, supported values are `'active'`, `'none'`. See
+   * [page.emulateMedia([options])](https://playwright.dev/docs/api/class-page#page-emulate-media) for more details.
+   * Passing `null` resets emulation to system defaults. Defaults to `'none'`.
+   *
+   * **Usage**
+   *
+   * ```js
+   * // playwright.config.ts
+   * import { defineConfig } from '@playwright/test';
+   *
+   * export default defineConfig({
+   *   use: {
+   *     forcedColors: 'active',
+   *   },
+   * });
+   * ```
+   *
+   */
+  forcedColors: ForcedColors;
+  /**
    * **Usage**
    *
    * ```js
@@ -7260,6 +7563,9 @@ export interface PlaywrightTestOptions {
    * Credentials for [HTTP authentication](https://developer.mozilla.org/en-US/docs/Web/HTTP/Authentication). If no
    * origin is specified, the username and password are sent to any servers upon unauthorized responses.
    *
+   * Pass an array to use different credentials for different origins. The first entry that matches the request origin
+   * is used, and entries with no origin match any request.
+   *
    * **Usage**
    *
    * ```js
@@ -7276,8 +7582,21 @@ export interface PlaywrightTestOptions {
    * });
    * ```
    *
+   * When passing an array of credentials to [test.use(options)](https://playwright.dev/docs/api/class-test#test-use),
+   * wrap it into an extra array, see [fixture options](https://playwright.dev/docs/test-fixtures#fixtures-options).
+   *
+   * ```js
+   * // example.spec.ts
+   * test.use({
+   *   httpCredentials: [[
+   *     { username: 'alice', password: 'alice-pass', origin: 'https://a.example.com' },
+   *     { username: 'bob', password: 'bob-pass', origin: 'https://b.example.com' },
+   *   ], { scope: 'test' }],
+   * });
+   * ```
+   *
    */
-  httpCredentials: HTTPCredentials | undefined;
+  httpCredentials: HTTPCredentials | HTTPCredentials[] | undefined;
   /**
    * Whether to ignore HTTPS errors when sending network requests. Defaults to `false`.
    *
@@ -7298,8 +7617,8 @@ export interface PlaywrightTestOptions {
   ignoreHTTPSErrors: boolean;
   /**
    * Whether the `meta viewport` tag is taken into account and touch events are enabled. isMobile is a part of device,
-   * so you don't actually need to set it manually. Defaults to `false` and is not supported in Firefox. Learn more
-   * about [mobile emulation](https://playwright.dev/docs/emulation#ismobile).
+   * so you don't actually need to set it manually. Defaults to `false`. Learn more about
+   * [mobile emulation](https://playwright.dev/docs/emulation#ismobile).
    *
    * **Usage**
    *
@@ -7415,6 +7734,46 @@ export interface PlaywrightTestOptions {
    *
    */
   proxy: Proxy | undefined;
+  /**
+   * Emulates `'prefers-reduced-motion'` media feature, supported values are `'reduce'`, `'no-preference'`. See
+   * [page.emulateMedia([options])](https://playwright.dev/docs/api/class-page#page-emulate-media) for more details.
+   * Passing `null` resets emulation to system defaults. Defaults to `'no-preference'`.
+   *
+   * **Usage**
+   *
+   * ```js
+   * // playwright.config.ts
+   * import { defineConfig } from '@playwright/test';
+   *
+   * export default defineConfig({
+   *   use: {
+   *     reducedMotion: 'reduce',
+   *   },
+   * });
+   * ```
+   *
+   */
+  reducedMotion: ReducedMotion;
+  /**
+   * Emulates consistent window screen size available inside web page via `window.screen`. Is only used when the
+   * [testOptions.viewport](https://playwright.dev/docs/api/class-testoptions#test-options-viewport) is set.
+   *
+   * **Usage**
+   *
+   * ```js
+   * // playwright.config.ts
+   * import { defineConfig } from '@playwright/test';
+   *
+   * export default defineConfig({
+   *   use: {
+   *     viewport: { width: 390, height: 664 },
+   *     screen: { width: 390, height: 844 },
+   *   },
+   * });
+   * ```
+   *
+   */
+  screen: ViewportSize | undefined;
   /**
    * Learn more about [storage state and auth](https://playwright.dev/docs/auth).
    *
@@ -7717,6 +8076,18 @@ export interface PlaywrightWorkerArgs {
   browser: Browser;
 }
 
+export interface Stories {}
+
+type StoryProps<Story> =
+  Story extends (props: infer Props) => any ? Props :
+  Story extends new (...args: any[]) => { $props: infer Props } ? Props :
+  Story extends new (props: infer Props, ...args: any[]) => any ? Props :
+  Story;
+type StoryId = keyof Stories | (string & {});
+type StoryPropsFor<Id> = Id extends keyof Stories ? StoryProps<Stories[Id]> : Record<string, any>;
+// Explicit mount<typeof Story>() wins over the id lookup; the indexed access keeps Story from being inferred from props.
+type MountProps<Story, Id> = [Story] extends [never] ? StoryPropsFor<Id> : StoryProps<[Story][Story extends any ? 0 : never]>;
+
 /**
  * Playwright Test is based on the concept of the [test fixtures](https://playwright.dev/docs/test-fixtures). Test fixtures are used to
  * establish environment for each test, giving the test everything it needs and nothing else.
@@ -7808,6 +8179,48 @@ export interface PlaywrightTestArgs {
    *
    */
   request: APIRequestContext;
+  /**
+   * Mounts a component story and returns a [Locator](https://playwright.dev/docs/api/class-locator) pointing to the
+   * root element the story was rendered into. Scope your queries from the returned locator:
+   * `component.getByRole('button')`, not `page.getByRole('button')`.
+   *
+   * A **story** is a small wrapper component that embeds the component under test in one specific scenario: hard-coded
+   * props, mock data, providers, recorded callbacks. Stories are rendered by a **gallery** page that you implement and
+   * serve at [testOptions.baseURL](https://playwright.dev/docs/api/class-testoptions#test-options-base-url). The
+   * gallery exposes `window.mount(params)` and `window.unmount()` functions that render a story into its root element.
+   * Each call to [fixtures.mount(storyId[, props])](https://playwright.dev/docs/api/class-fixtures#fixtures-mount)
+   * navigates to [testOptions.baseURL](https://playwright.dev/docs/api/class-testoptions#test-options-base-url) and
+   * calls `window.mount()` with the story id and props, so tests are fully isolated from each other.
+   *
+   * **Usage**
+   *
+   * ```js
+   * test('click should expand', async ({ mount }) => {
+   *   const component = await mount('components/Expandable/Stateful');
+   *   await component.getByRole('button').click();
+   *   await expect(component.getByTestId('expanded')).toHaveValue('true');
+   * });
+   * ```
+   *
+   * Pass the story type as a template argument to type-check the props:
+   *
+   * ```js
+   * import type { WithTitle } from './Button.story';
+   *
+   * test('renders the title', async ({ mount }) => {
+   *   const component = await mount<typeof WithTitle>('Button/WithTitle', { title: 'Hello' });
+   *   await expect(component).toContainText('Hello');
+   * });
+   * ```
+   *
+   * The returned locator is augmented with two methods:
+   * - `update(props)` - re-renders the same story with new props without remounting, preserving component state;
+   * - `unmount()` - unmounts the story.
+   * @param storyId Identifier of the story to mount, as resolved by the gallery page. Conventionally, the story file path plus the
+   * exported story name, for example `'components/Button/Primary'`.
+   * @param props Optional plain, serializable props passed to the story.
+   */
+  mount: <Story = never, Id extends StoryId = StoryId>(storyId: Id, props?: MountProps<Story, Id>) => Promise<Locator & { update(props?: MountProps<Story, Id>): Promise<void>, unmount(): Promise<void> }>;
 }
 
 type ExcludeProps<A, B> = {
@@ -8671,7 +9084,6 @@ export function mergeExpects<List extends any[]>(...expects: List): MergedExpect
 export { };
 
 
-
 /**
  * The [APIResponseAssertions](https://playwright.dev/docs/api/class-apiresponseassertions) class provides assertion
  * methods that can be used to make assertions about the
@@ -8749,6 +9161,13 @@ interface LocatorAssertions {
     attached?: boolean;
 
     /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
      */
     timeout?: number;
@@ -8783,6 +9202,13 @@ interface LocatorAssertions {
     indeterminate?: boolean;
 
     /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
      */
     timeout?: number;
@@ -8806,6 +9232,13 @@ interface LocatorAssertions {
    */
   toBeDisabled(options?: {
     /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
      */
     timeout?: number;
@@ -8825,6 +9258,13 @@ interface LocatorAssertions {
    */
   toBeEditable(options?: {
     editable?: boolean;
+
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
 
     /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
@@ -8847,6 +9287,13 @@ interface LocatorAssertions {
    */
   toBeEmpty(options?: {
     /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
      */
     timeout?: number;
@@ -8868,6 +9315,13 @@ interface LocatorAssertions {
     enabled?: boolean;
 
     /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
      */
     timeout?: number;
@@ -8886,6 +9340,13 @@ interface LocatorAssertions {
    * @param options
    */
   toBeFocused(options?: {
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
     /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
      */
@@ -8906,6 +9367,13 @@ interface LocatorAssertions {
    * @param options
    */
   toBeHidden(options?: {
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
     /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
      */
@@ -8937,6 +9405,13 @@ interface LocatorAssertions {
      * any positive ratio. Defaults to `0`.
      */
     ratio?: number;
+
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
 
     /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
@@ -8971,6 +9446,13 @@ interface LocatorAssertions {
    * @param options
    */
   toBeVisible(options?: {
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
     /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
      */
@@ -9018,6 +9500,13 @@ interface LocatorAssertions {
    * @param options
    */
   toContainClass(expected: string|ReadonlyArray<string>, options?: {
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
     /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
      */
@@ -9086,6 +9575,13 @@ interface LocatorAssertions {
     ignoreCase?: boolean;
 
     /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
      */
     timeout?: number;
@@ -9119,6 +9615,13 @@ interface LocatorAssertions {
     ignoreCase?: boolean;
 
     /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
      */
     timeout?: number;
@@ -9145,6 +9648,13 @@ interface LocatorAssertions {
      * option takes precedence over the corresponding regular expression flag if specified.
      */
     ignoreCase?: boolean;
+
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
 
     /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
@@ -9175,6 +9685,13 @@ interface LocatorAssertions {
     ignoreCase?: boolean;
 
     /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
      */
     timeout?: number;
@@ -9203,6 +9720,13 @@ interface LocatorAssertions {
     ignoreCase?: boolean;
 
     /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
      */
     timeout?: number;
@@ -9223,6 +9747,13 @@ interface LocatorAssertions {
    * @param options
    */
   toHaveAttribute(name: string, options?: {
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
     /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
      */
@@ -9260,6 +9791,13 @@ interface LocatorAssertions {
    */
   toHaveClass(expected: string|RegExp|ReadonlyArray<string|RegExp>, options?: {
     /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
      */
     timeout?: number;
@@ -9279,6 +9817,13 @@ interface LocatorAssertions {
    * @param options
    */
   toHaveCount(count: number, options?: {
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
     /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
      */
@@ -9307,6 +9852,13 @@ interface LocatorAssertions {
     pseudo?: "before"|"after";
 
     /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
      */
     timeout?: number;
@@ -9327,6 +9879,13 @@ interface LocatorAssertions {
    * @param options
    */
   toHaveId(id: string|RegExp, options?: {
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
     /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
      */
@@ -9349,6 +9908,13 @@ interface LocatorAssertions {
    * @param options
    */
   toHaveJSProperty(name: string, value: any, options?: {
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
     /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
      */
@@ -9374,6 +9940,13 @@ interface LocatorAssertions {
    */
   toHaveRole(role: "alert"|"alertdialog"|"application"|"article"|"banner"|"blockquote"|"button"|"caption"|"cell"|"checkbox"|"code"|"columnheader"|"combobox"|"complementary"|"contentinfo"|"definition"|"deletion"|"dialog"|"directory"|"document"|"emphasis"|"feed"|"figure"|"form"|"generic"|"grid"|"gridcell"|"group"|"heading"|"img"|"insertion"|"link"|"list"|"listbox"|"listitem"|"log"|"main"|"marquee"|"math"|"meter"|"menu"|"menubar"|"menuitem"|"menuitemcheckbox"|"menuitemradio"|"navigation"|"none"|"note"|"option"|"paragraph"|"presentation"|"progressbar"|"radio"|"radiogroup"|"region"|"row"|"rowgroup"|"rowheader"|"scrollbar"|"search"|"searchbox"|"separator"|"slider"|"spinbutton"|"status"|"strong"|"subscript"|"superscript"|"switch"|"tab"|"table"|"tablist"|"tabpanel"|"term"|"textbox"|"time"|"timer"|"toolbar"|"tooltip"|"tree"|"treegrid"|"treeitem", options?: {
     /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
      */
     timeout?: number;
@@ -9388,10 +9961,14 @@ interface LocatorAssertions {
    * ```js
    * const locator = page.getByRole('button');
    * await expect(locator).toHaveScreenshot('image.png');
+   *
+   * // Store the snapshot in the WebP format.
+   * await expect(locator).toHaveScreenshot('image.webp');
    * ```
    *
    * Note that screenshot assertions only work with Playwright test runner.
-   * @param name Snapshot name.
+   * @param name Snapshot name. Must have a `.png` or `.webp` extension, the screenshot is captured in the corresponding format.
+   * Both formats are lossless.
    * @param options
    */
   toHaveScreenshot(name: string|ReadonlyArray<string>, options?: {
@@ -9428,13 +10005,16 @@ interface LocatorAssertions {
 
     /**
      * An acceptable ratio of pixels that are different to the total amount of pixels, between `0` and `1`. Default is
-     * configurable with `TestConfig.expect`. Unset by default.
+     * configurable with `TestConfig.expect`. Note that
+     * [`threshold`](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-have-screenshot-1-option-threshold)
+     * defines which pixels are considered different.
      */
     maxDiffPixelRatio?: number;
 
     /**
-     * An acceptable amount of pixels that could be different. Default is configurable with `TestConfig.expect`. Unset by
-     * default.
+     * An acceptable amount of pixels that could be different. Default is configurable with `TestConfig.expect`. Note that
+     * [`threshold`](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-have-screenshot-1-option-threshold)
+     * defines which pixels are considered different.
      */
     maxDiffPixels?: number;
 
@@ -9452,6 +10032,13 @@ interface LocatorAssertions {
      * Defaults to `"css"`.
      */
     scale?: "css"|"device";
+
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
 
     /**
      * File name containing the stylesheet to apply while making the screenshot. This is where you can hide dynamic
@@ -9476,6 +10063,9 @@ interface LocatorAssertions {
   /**
    * This function will wait until two consecutive locator screenshots yield the same result, and then compare the last
    * screenshot with the expectation.
+   *
+   * The snapshot is stored in the PNG format. To store it in the WebP format instead, pass a snapshot name with the
+   * `.webp` extension.
    *
    * **Usage**
    *
@@ -9521,13 +10111,16 @@ interface LocatorAssertions {
 
     /**
      * An acceptable ratio of pixels that are different to the total amount of pixels, between `0` and `1`. Default is
-     * configurable with `TestConfig.expect`. Unset by default.
+     * configurable with `TestConfig.expect`. Note that
+     * [`threshold`](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-have-screenshot-2-option-threshold)
+     * defines which pixels are considered different.
      */
     maxDiffPixelRatio?: number;
 
     /**
-     * An acceptable amount of pixels that could be different. Default is configurable with `TestConfig.expect`. Unset by
-     * default.
+     * An acceptable amount of pixels that could be different. Default is configurable with `TestConfig.expect`. Note that
+     * [`threshold`](https://playwright.dev/docs/api/class-locatorassertions#locator-assertions-to-have-screenshot-2-option-threshold)
+     * defines which pixels are considered different.
      */
     maxDiffPixels?: number;
 
@@ -9545,6 +10138,13 @@ interface LocatorAssertions {
      * Defaults to `"css"`.
      */
     scale?: "css"|"device";
+
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
 
     /**
      * File name containing the stylesheet to apply while making the screenshot. This is where you can hide dynamic
@@ -9627,6 +10227,13 @@ interface LocatorAssertions {
     ignoreCase?: boolean;
 
     /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
      */
     timeout?: number;
@@ -9652,6 +10259,13 @@ interface LocatorAssertions {
    * @param options
    */
   toHaveValue(value: string|RegExp, options?: {
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
     /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
      */
@@ -9685,6 +10299,13 @@ interface LocatorAssertions {
    */
   toHaveValues(values: ReadonlyArray<string|RegExp>, options?: {
     /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
      */
     timeout?: number;
@@ -9707,6 +10328,13 @@ interface LocatorAssertions {
    * @param options
    */
   toMatchAriaSnapshot(expected: string, options?: {
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
     /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
      */
@@ -9734,6 +10362,13 @@ interface LocatorAssertions {
      * specified.
      */
     name?: string;
+
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
 
     /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
@@ -9780,10 +10415,14 @@ interface PageAssertions {
    *
    * ```js
    * await expect(page).toHaveScreenshot('image.png');
+   *
+   * // Store the snapshot in the WebP format.
+   * await expect(page).toHaveScreenshot('image.webp');
    * ```
    *
    * Note that screenshot assertions only work with Playwright test runner.
-   * @param name Snapshot name.
+   * @param name Snapshot name. Must have a `.png` or `.webp` extension, the screenshot is captured in the corresponding format.
+   * Both formats are lossless.
    * @param options
    */
   toHaveScreenshot(name: string|ReadonlyArray<string>, options?: PageAssertionsToHaveScreenshotOptions): Promise<void>;
@@ -9791,6 +10430,9 @@ interface PageAssertions {
   /**
    * This function will wait until two consecutive page screenshots yield the same result, and then compare the last
    * screenshot with the expectation.
+   *
+   * The snapshot is stored in the PNG format. To store it in the WebP format instead, pass a snapshot name with the
+   * `.webp` extension.
    *
    * **Usage**
    *
@@ -9816,6 +10458,13 @@ interface PageAssertions {
    * @param options
    */
   toHaveTitle(titleOrRegExp: string|RegExp, options?: {
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
     /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
      */
@@ -9862,6 +10511,13 @@ interface PageAssertions {
     ignoreCase?: boolean;
 
     /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
+    /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
      */
     timeout?: number;
@@ -9884,6 +10540,13 @@ interface PageAssertions {
    * @param options
    */
   toMatchAriaSnapshot(expected: string, options?: {
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
+
     /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
      */
@@ -9911,6 +10574,13 @@ interface PageAssertions {
      * specified.
      */
     name?: string;
+
+    /**
+     * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+     * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+     * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+     */
+    signal?: AbortSignal;
 
     /**
      * Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
@@ -9978,13 +10648,16 @@ interface SnapshotAssertions {
   toMatchSnapshot(name: string|ReadonlyArray<string>, options?: {
     /**
      * An acceptable ratio of pixels that are different to the total amount of pixels, between `0` and `1`. Default is
-     * configurable with `TestConfig.expect`. Unset by default.
+     * configurable with `TestConfig.expect`. Note that
+     * [`threshold`](https://playwright.dev/docs/api/class-snapshotassertions#snapshot-assertions-to-match-snapshot-1-option-threshold)
+     * defines which pixels are considered different.
      */
     maxDiffPixelRatio?: number;
 
     /**
-     * An acceptable amount of pixels that could be different. Default is configurable with `TestConfig.expect`. Unset by
-     * default.
+     * An acceptable amount of pixels that could be different. Default is configurable with `TestConfig.expect`. Note that
+     * [`threshold`](https://playwright.dev/docs/api/class-snapshotassertions#snapshot-assertions-to-match-snapshot-1-option-threshold)
+     * defines which pixels are considered different.
      */
     maxDiffPixels?: number;
 
@@ -10030,13 +10703,16 @@ interface SnapshotAssertions {
   toMatchSnapshot(options?: {
     /**
      * An acceptable ratio of pixels that are different to the total amount of pixels, between `0` and `1`. Default is
-     * configurable with `TestConfig.expect`. Unset by default.
+     * configurable with `TestConfig.expect`. Note that
+     * [`threshold`](https://playwright.dev/docs/api/class-snapshotassertions#snapshot-assertions-to-match-snapshot-2-option-threshold)
+     * defines which pixels are considered different.
      */
     maxDiffPixelRatio?: number;
 
     /**
-     * An acceptable amount of pixels that could be different. Default is configurable with `TestConfig.expect`. Unset by
-     * default.
+     * An acceptable amount of pixels that could be different. Default is configurable with `TestConfig.expect`. Note that
+     * [`threshold`](https://playwright.dev/docs/api/class-snapshotassertions#snapshot-assertions-to-match-snapshot-2-option-threshold)
+     * defines which pixels are considered different.
      */
     maxDiffPixels?: number;
 
@@ -10235,6 +10911,26 @@ export interface TestStepInfo {
   skip(condition: boolean, description?: string): void;
 
   /**
+   * The list of annotations applicable to the current test step.
+   */
+  annotations: Array<{
+    /**
+     * Annotation type, for example `'skip'`.
+     */
+    type: string;
+
+    /**
+     * Optional description.
+     */
+    description?: string;
+
+    /**
+     * Optional location in the source where the annotation is added.
+     */
+    location?: Location;
+  }>;
+
+  /**
    * The full title path starting with the test file name, including the step titles. See also
    * [testInfo.titlePath](https://playwright.dev/docs/api/class-testinfo#test-info-title-path).
    */
@@ -10342,13 +11038,16 @@ export interface PageAssertionsToHaveScreenshotOptions {
 
   /**
    * An acceptable ratio of pixels that are different to the total amount of pixels, between `0` and `1`. Default is
-   * configurable with `TestConfig.expect`. Unset by default.
+   * configurable with `TestConfig.expect`. Note that
+   * [`threshold`](https://playwright.dev/docs/api/class-pageassertions#page-assertions-to-have-screenshot-1-option-threshold)
+   * defines which pixels are considered different.
    */
   maxDiffPixelRatio?: number;
 
   /**
-   * An acceptable amount of pixels that could be different. Default is configurable with `TestConfig.expect`. Unset by
-   * default.
+   * An acceptable amount of pixels that could be different. Default is configurable with `TestConfig.expect`. Note that
+   * [`threshold`](https://playwright.dev/docs/api/class-pageassertions#page-assertions-to-have-screenshot-1-option-threshold)
+   * defines which pixels are considered different.
    */
   maxDiffPixels?: number;
 
@@ -10366,6 +11065,13 @@ export interface PageAssertionsToHaveScreenshotOptions {
    * Defaults to `"css"`.
    */
   scale?: "css"|"device";
+
+  /**
+   * An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that can cancel the
+   * assertion. Aborting the signal fails the assertion like a timeout: if the signal is aborted while the assertion is
+   * retrying, or is already aborted before the assertion starts, the assertion fails without retrying further.
+   */
+  signal?: AbortSignal;
 
   /**
    * File name containing the stylesheet to apply while making the screenshot. This is where you can hide dynamic

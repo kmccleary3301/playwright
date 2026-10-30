@@ -15,26 +15,37 @@
  */
 
 import fs from 'fs';
-import path from 'path';
 
-import { PNG } from 'pngjs';
+import { PNG } from '../../utilsBundle';
 import * as z from 'zod';
 
+import { optionalElementSchema } from './snapshot';
 import { defineTabTool } from './tool';
-import { outputDir as outputDirForClient } from './context';
 
-
-import type { Context } from './context';
+import type { Response } from './response';
 import type * as playwright from '../../..';
 
-function resolveMaybeRelative(context: Context, inputPath: string): string {
-  if (path.isAbsolute(inputPath))
-    return inputPath;
-  const cwdPath = path.resolve(process.cwd(), inputPath);
-  if (fs.existsSync(cwdPath))
-    return cwdPath;
-  const outDir = outputDirForClient(context.options);
-  return path.resolve(outDir, inputPath);
+async function decodePng(buffer: Buffer): Promise<PNG> {
+  return await new Promise<PNG>((resolve, reject) => {
+    new PNG().parse(buffer, (error, png) => {
+      if (error)
+        reject(error);
+      else
+        resolve(png);
+    });
+  });
+}
+
+async function encodePng(image: PNG): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of image.pack())
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  return Buffer.concat(chunks);
+}
+
+async function saveImage(response: Response, filename: string, prefix: string, title: string, image: Buffer) {
+  const resolvedFile = await response.resolveClientOutputFile({ prefix, ext: 'png', suggestedFilename: filename }, title);
+  await response.addFileResult(resolvedFile, image);
 }
 
 function comparePixels(actual: Buffer, expected: Buffer, diff: Buffer, width: number, height: number, threshold: number): number {
@@ -70,40 +81,41 @@ const screenshotDiff = defineTabTool({
   schema: {
     name: 'browser_screenshot_diff',
     title: 'Screenshot diff',
-    description: 'Compare a screenshot against a baseline image',
-    inputSchema: z.object({
+    description: 'Compare a screenshot with a PNG baseline; threshold is a per-channel delta (0-255, default 1).',
+    inputSchema: optionalElementSchema.extend({
       baselinePath: z.string().describe('Path to baseline PNG image'),
-      element: z.string().optional().describe('Human-readable element description'),
-      ref: z.string().optional().describe('Exact target element reference'),
-      fullPage: z.boolean().optional().describe('Capture full page screenshot (ignored for element screenshots)'),
-      threshold: z.number().optional().describe('Max color delta threshold (default 1.0)'),
-      diffPath: z.string().optional().describe('File path to save diff image'),
-      currentPath: z.string().optional().describe('File path to save current screenshot'),
-      highlight: z.boolean().optional().describe('Highlight target element before screenshot'),
-      disableAnimations: z.boolean().optional().describe('Disable CSS animations/transitions before screenshot'),
-      failOnDiff: z.boolean().optional().describe('Whether to fail when diff is detected (default true)'),
+      fullPage: z.boolean().optional().describe('Capture full page; ignored for target screenshots.'),
+      threshold: z.number().optional().describe('Max per-channel color delta, 0-255 (default 1).'),
+      diffPath: z.string().optional().describe('Output path for the diff image.'),
+      currentPath: z.string().optional().describe('Output path for the current screenshot.'),
+      highlight: z.boolean().optional().describe('Highlight the target element before capture.'),
+      disableAnimations: z.boolean().optional().describe('Disable CSS animations/transitions before capture.'),
+      failOnDiff: z.boolean().optional().describe('Fail when the page differs from the baseline (default true).'),
     }),
     type: 'assertion',
   },
 
   handle: async (tab, params, response) => {
-    if (!!params.element !== !!params.ref)
-      throw new Error('Both element and ref must be provided or neither.');
-
-    const baselinePath = resolveMaybeRelative(tab.context, params.baselinePath);
-    const baselineBuffer = fs.readFileSync(baselinePath);
-    const expected = PNG.sync.read(baselineBuffer);
-
+    const baselinePath = await response.resolveClientFilename(params.baselinePath);
+    let baselineBuffer: Buffer;
+    try {
+      baselineBuffer = await fs.promises.readFile(baselinePath);
+    } catch (error) {
+      if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT'))
+        throw error;
+      response.addError(`Screenshot baseline file not found: ${params.baselinePath}`);
+      return;
+    }
+    const expected = await decodePng(baselineBuffer);
+    const target = params.target ? await tab.targetLocator({ target: params.target, element: params.element }) : undefined;
     const options = {
       type: 'png',
-      fullPage: params.fullPage === true && !params.ref,
+      fullPage: params.fullPage === true && !target,
     } as const;
 
     const capture = async () => {
-      if (params.ref) {
-        const { locator } = await tab.targetLocator({ target: params.ref, element: params.element || '' });
-        return await locator.screenshot(options);
-      }
+      if (target)
+        return await target.locator.screenshot(options);
       return await tab.page.screenshot(options);
     };
 
@@ -112,59 +124,54 @@ const screenshotDiff = defineTabTool({
 
     if (params.disableAnimations) {
       buffer = await withTemporaryStyle(tab.page, '*{animation:none !important;transition:none !important;}', async () => {
-        if (params.highlight && params.ref) {
-          const { locator } = await tab.targetLocator({ target: params.ref, element: params.element || '' });
-          await locator.evaluate((el: HTMLElement) => el.setAttribute('data-mcp-highlight', 'true'));
+        if (params.highlight && target) {
+          await target.locator.evaluate((el: HTMLElement) => el.setAttribute('data-mcp-highlight', 'true'));
           return await withTemporaryStyle(tab.page, highlightCSS, async () => {
-            const image = await capture();
-            await locator.evaluate((el: HTMLElement) => el.removeAttribute('data-mcp-highlight'));
-            return image;
+            try {
+              return await capture();
+            } finally {
+              await target.locator.evaluate((el: HTMLElement) => el.removeAttribute('data-mcp-highlight')).catch(() => {});
+            }
           });
         }
         return await capture();
       });
-    } else if (params.highlight && params.ref) {
-      const { locator } = await tab.targetLocator({ target: params.ref, element: params.element || '' });
+    } else if (params.highlight && target) {
       buffer = await withTemporaryStyle(tab.page, highlightCSS, async () => {
-        await locator.evaluate((el: HTMLElement) => el.setAttribute('data-mcp-highlight', 'true'));
-        const image = await capture();
-        await locator.evaluate((el: HTMLElement) => el.removeAttribute('data-mcp-highlight'));
-        return image;
+        await target.locator.evaluate((el: HTMLElement) => el.setAttribute('data-mcp-highlight', 'true'));
+        try {
+          return await capture();
+        } finally {
+          await target.locator.evaluate((el: HTMLElement) => el.removeAttribute('data-mcp-highlight')).catch(() => {});
+        }
       });
     } else {
       buffer = await capture();
     }
 
-    const actual = PNG.sync.read(buffer);
+    const actual = await decodePng(buffer);
     if (expected.width !== actual.width || expected.height !== actual.height) {
-      const message = `Screenshot size mismatch. Expected ${expected.width}x${expected.height}, got ${actual.width}x${actual.height}.`;
-      if (params.currentPath) {
-        const currentFile = await response.resolveClientFilename(params.currentPath);
-        fs.writeFileSync(currentFile, buffer);
-      }
-      response.addError(message);
+      if (params.currentPath)
+        await saveImage(response, params.currentPath, 'screenshot-current', 'Current screenshot', buffer);
+      response.addError(`Screenshot size mismatch: expected ${expected.width}x${expected.height}, got ${actual.width}x${actual.height}.`);
       return;
     }
 
     const diffImage = new PNG({ width: expected.width, height: expected.height });
-    const diffPixels = comparePixels(actual.data, expected.data, diffImage.data, expected.width, expected.height, params.threshold ?? 1.0);
+    const diffPixels = comparePixels(actual.data, expected.data, diffImage.data, expected.width, expected.height, params.threshold ?? 1);
     const totalPixels = expected.width * expected.height;
     const diffPercent = (diffPixels / totalPixels) * 100;
 
-    if (params.currentPath) {
-      const currentFile = await response.resolveClientFilename(params.currentPath);
-      fs.writeFileSync(currentFile, buffer);
-    }
+    if (params.currentPath)
+      await saveImage(response, params.currentPath, 'screenshot-current', 'Current screenshot', buffer);
 
     if (diffPixels === 0) {
       response.addTextResult('Screenshot matches baseline.');
       return;
     }
 
-    if (params.diffPath) {
-      const diffFile = await response.resolveClientFilename(params.diffPath);
-      fs.writeFileSync(diffFile, PNG.sync.write(diffImage));
-    }
+    if (params.diffPath)
+      await saveImage(response, params.diffPath, 'screenshot-diff', 'Screenshot diff', await encodePng(diffImage));
 
     const message = `Screenshot differs from baseline: ${diffPixels} pixels (${diffPercent.toFixed(2)}%).`;
     if (params.failOnDiff !== false)
@@ -175,3 +182,4 @@ const screenshotDiff = defineTabTool({
 });
 
 export default [screenshotDiff];
+

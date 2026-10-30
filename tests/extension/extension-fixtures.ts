@@ -36,10 +36,6 @@ export type CliResult = {
   error: string;
 };
 
-export type ExtensionTestOptions = {
-  protocolVersion: 1 | 2;
-};
-
 export type TestFixtures = {
   browserWithExtension: BrowserWithExtension,
   pathToExtension: string,
@@ -47,24 +43,9 @@ export type TestFixtures = {
   cli: (args: string[], options?: { env?: Record<string, string> }) => Promise<CliResult>;
 };
 
-type WorkerFixtures = {
-  _protocolEnv: void;
-};
-
 export const extensionId = 'mmlmfjhmonkocbjadbfplnigmagldckm';
 
-export const test = base.extend<TestFixtures, WorkerFixtures & ExtensionTestOptions>({
-  protocolVersion: [2, { option: true, scope: 'worker' }],
-
-  _protocolEnv: [async ({ protocolVersion }, use) => {
-    // Default is 2.
-    if (protocolVersion === 1)
-      process.env.PLAYWRIGHT_EXTENSION_PROTOCOL = '1';
-    else
-      delete process.env.PLAYWRIGHT_EXTENSION_PROTOCOL;
-    await use();
-  }, { auto: true, scope: 'worker' }],
-
+export const test = base.extend<TestFixtures>({
   pathToExtension: async ({}, use, testInfo) => {
     const extensionDir = testInfo.outputPath('extension');
     const srcDir = path.resolve(__dirname, '../../packages/extension/dist');
@@ -214,6 +195,28 @@ export async function startWithExtensionFlag(browserWithExtension: BrowserWithEx
     },
   });
   return client;
+}
+
+export async function readExtensionToken(browserContext: BrowserContext): Promise<string> {
+  const page = await browserContext.newPage();
+  await page.goto(`chrome-extension://${extensionId}/status.html`);
+  const token = await page.locator('.auth-token-code').textContent();
+  await page.close();
+  const [, value] = token?.split('=') || [];
+  return value;
+}
+
+export async function connectWithToken(browserContext: BrowserContext, startClient: StartClient, userDataDir: string): Promise<{ client: Client, stderr: () => string }> {
+  const token = await readExtensionToken(browserContext);
+  const { client, stderr } = await startClient({
+    args: ['--extension'],
+    env: {
+      DEBUG: 'pw:mcp:backend',
+      PLAYWRIGHT_MCP_EXTENSION_TOKEN: token,
+      PWTEST_EXTENSION_USER_DATA_DIR: userDataDir,
+    },
+  });
+  return { client, stderr };
 }
 
 // The connect page closes itself once a different tab is selected, which races

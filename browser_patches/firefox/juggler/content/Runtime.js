@@ -56,6 +56,10 @@ const disallowedMessageCategories = new Set([
 class Runtime {
   constructor(isWorker = false) {
     this._debugger = new Debugger();
+    // A debuggee global with these flags unset is pinned to the debuggable wasm/asm.js
+    // baseline tier, with the optimizing compiler disabled entirely.
+    this._debugger.allowUnobservedWasm = true;
+    this._debugger.allowUnobservedAsmJS = true;
     this._pendingPromises = new Map();
     this._executionContexts = new Map();
     this._windowToExecutionContext = new Map();
@@ -246,10 +250,7 @@ class Runtime {
     if (obj.promiseState === 'fulfilled')
       return {success: true, obj: obj.promiseValue};
     if (obj.promiseState === 'rejected') {
-      const debuggee = executionContext._debuggee;
-      const errorInfo = debuggee.executeInGlobalWithBindings('({m: e?.message, s: e?.stack})', {e: obj.promiseReason}, {useInnerBindings: true}).return;
-      exceptionDetails.text = errorInfo.getOwnPropertyDescriptor('m').value;
-      exceptionDetails.stack = errorInfo.getOwnPropertyDescriptor('s').value;
+      executionContext._fillExceptionDetails(obj.promiseReason, exceptionDetails);
       return {success: false, obj: null};
     }
     let resolve, reject;
@@ -257,29 +258,34 @@ class Runtime {
       resolve = a;
       reject = b;
     });
-    this._pendingPromises.set(obj.promiseID, {resolve, reject, executionContext, exceptionDetails});
+    this._pendingPromises.set(obj.promiseID, {resolve, reject, executionContext, exceptionDetails, promiseObj: obj});
+    // Debugger.onPromiseSettled hook was removed in Bug 2044167. Instead, attach
+    // reactions inside the debuggee that run a `debugger;` statement upon settling,
+    // and sweep pending promises from the onDebuggerStatement hook. Unlike
+    // dereferencing the promise and adding reactions from the privileged
+    // compartment, this also works in workers where there are no Xrays.
     if (this._pendingPromises.size === 1)
-      this._debugger.onPromiseSettled = this._onPromiseSettled.bind(this);
+      this._debugger.onDebuggerStatement = this._onDebuggerStatement.bind(this);
+    executionContext._debuggee.executeInGlobalWithBindings(
+        'p.then(() => { debugger; }, () => { debugger; })', {p: obj}, {useInnerBindings: true});
     return await promise;
   }
 
-  _onPromiseSettled(obj) {
-    const pendingPromise = this._pendingPromises.get(obj.promiseID);
-    if (!pendingPromise)
-      return;
-    this._pendingPromises.delete(obj.promiseID);
+  _onDebuggerStatement() {
+    for (const [promiseID, pendingPromise] of this._pendingPromises) {
+      const obj = pendingPromise.promiseObj;
+      if (obj.promiseState === 'pending')
+        continue;
+      this._pendingPromises.delete(promiseID);
+      if (obj.promiseState === 'fulfilled') {
+        pendingPromise.resolve({success: true, obj: obj.promiseValue});
+        continue;
+      }
+      pendingPromise.executionContext._fillExceptionDetails(obj.promiseReason, pendingPromise.exceptionDetails);
+      pendingPromise.resolve({success: false, obj: null});
+    }
     if (!this._pendingPromises.size)
-      this._debugger.onPromiseSettled = undefined;
-
-    if (obj.promiseState === 'fulfilled') {
-      pendingPromise.resolve({success: true, obj: obj.promiseValue});
-      return;
-    };
-    const debuggee = pendingPromise.executionContext._debuggee;
-    const errorInfo = debuggee.executeInGlobalWithBindings('({m: e?.message, s: e?.stack})', {e: obj.promiseReason}, {useInnerBindings: true}).return;
-    pendingPromise.exceptionDetails.text = errorInfo.getOwnPropertyDescriptor('m').value;
-    pendingPromise.exceptionDetails.stack = errorInfo.getOwnPropertyDescriptor('s').value;
-    pendingPromise.resolve({success: false, obj: null});
+      this._debugger.onDebuggerStatement = undefined;
   }
 
   createExecutionContext(domWindow, contextGlobal, auxData) {
@@ -307,7 +313,7 @@ class Runtime {
       }
     }
     if (!this._pendingPromises.size)
-      this._debugger.onPromiseSettled = undefined;
+      this._debugger.onDebuggerStatement = undefined;
     this._debugger.removeDebuggee(destroyedContext._contextGlobal);
     this._executionContexts.delete(destroyedContext._id);
     if (destroyedContext._domWindow)
@@ -547,18 +553,17 @@ class ExecutionContext {
 
   getObjectProperties(objectId) {
     if (!this._remoteObjects.has(objectId))
-      throw new Error('Cannot find object with id = ' + arg.objectId);
+      throw new Error('Cannot find object with id = ' + objectId);
     const result = [];
-    for (let obj = this._remoteObjects.get(objectId); obj; obj = obj.proto) {
-      for (const propertyName of obj.getOwnPropertyNames()) {
-        const descriptor = obj.getOwnPropertyDescriptor(propertyName);
-        if (!descriptor.enumerable)
-          continue;
-        result.push({
-          name: propertyName,
-          value: this._createRemoteObject(descriptor.value),
-        });
-      }
+    const obj = this._remoteObjects.get(objectId);
+    for (const propertyName of obj.getOwnPropertyNames()) {
+      const descriptor = obj.getOwnPropertyDescriptor(propertyName);
+      if (!descriptor.enumerable)
+        continue;
+      result.push({
+        name: propertyName,
+        value: this._createRemoteObject(descriptor.value),
+      });
     }
     return result;
   }
@@ -566,17 +571,36 @@ class ExecutionContext {
   _getResult(completionValue, exceptionDetails = {}) {
     if (!completionValue)
       throw new Error('evaluation terminated');
-    if (completionValue.throw) {
-      const errorInfo = this._debuggee.executeInGlobalWithBindings('e instanceof Error ? ({m: e.message, s: e.stack}) : null', {e: completionValue.throw}, {useInnerBindings: true}).return;
-      if (errorInfo) {
-        exceptionDetails.text = errorInfo.getOwnPropertyDescriptor('m').value;
-        exceptionDetails.stack = errorInfo.getOwnPropertyDescriptor('s').value;
-      } else {
-        exceptionDetails.value = this._serialize(completionValue.throw);
-      }
+    if ('throw' in completionValue) {
+      this._fillExceptionDetails(completionValue.throw, exceptionDetails);
       return {success: false, obj: null};
     }
     return {success: true, obj: completionValue.return};
+  }
+
+  _fillExceptionDetails(thrown, exceptionDetails) {
+    // Always populate `text`, so that the client reports something for any thrown
+    // value. Evaluate inside the debuggee and guard against throwing getters/toString.
+    const info = this._debuggee.executeInGlobalWithBindings(`(() => {
+      try {
+        if (e instanceof Error)
+          return {isError: true, text: e.message, stack: e.stack};
+        return {isError: false, text: String(e)};
+      } catch {
+        return {isError: false, text: 'Unserializable exception'};
+      }
+    })()`, {e: thrown}, {useInnerBindings: true}).return;
+    const property = name => info.getOwnPropertyDescriptor(name).value;
+    exceptionDetails.text = property('text');
+    if (property('isError')) {
+      exceptionDetails.stack = property('stack');
+      return;
+    }
+    try {
+      exceptionDetails.value = this._serialize(thrown);
+    } catch (e) {
+      // Not serializable (bigint, symbol, cyclic object): `text` is all we have.
+    }
   }
 }
 

@@ -23,11 +23,10 @@ import tls from 'tls';
 import { getProxyForUrl } from 'proxy-from-env';
 import { SocksProxy } from '@utils/socksProxy';
 import { debugLogger } from '@utils/debugLogger';
-import { createSocket } from '@utils/happyEyeballs';
 import { escapeHTML } from '@isomorphic/stringUtils';
 import { generateSelfSignedCertificate } from '@utils/crypto';
-import { rewriteErrorMessage } from '@isomorphic/stackTrace';
-import { createProxyAgent } from '@utils/network';
+import { rewriteErrorMessage } from '@utils/stackTrace';
+import { createProxyAgent, createSocket } from '@utils/network';
 import { verifyClientCertificates } from './browserContext';
 import type * as types from './types';
 import type { SocksSocketClosedPayload, SocksSocketDataPayload, SocksSocketRequestedPayload } from '@utils/socksProxy';
@@ -109,7 +108,8 @@ class SocksProxyConnection {
     this.uid = uid;
     this.host = host;
     this.port = port;
-    this._serverCloseEventListener = () => {
+    this._serverCloseEventListener = async () => {
+      await this._brorwserDecrypted?.catch(() => {});
       this._browserEncrypted.destroy();
     };
     this._browserEncrypted = new stream.Duplex({
@@ -224,7 +224,6 @@ class SocksProxyConnection {
       if (browserDecrypted.alpnProtocol === 'h2') {
         // This method is available only in Node.js 20+
         if ('performServerHandshake' in http2) {
-          // @ts-expect-error
           const session: http2.ServerHttp2Session = http2.performServerHandshake(browserDecrypted);
           session.on('error', error => {
             this._browserEncrypted.destroy(error);
@@ -315,10 +314,10 @@ export class ClientCertificatesProxy {
   }
 
   _getProxyAgent(host: string, port: number) {
-    const proxyFromOptions = createProxyAgent(this._proxy);
-    if (proxyFromOptions)
-      return proxyFromOptions;
-    const proxyFromEnv = getProxyForUrl(`https://${host}:${port}`);
+    const url = new URL(`https://${net.isIPv6(host) ? `[${host}]` : host}:${port}`);
+    if (this._proxy)
+      return createProxyAgent(this._proxy, url);
+    const proxyFromEnv = getProxyForUrl(url.href);
     if (proxyFromEnv)
       return createProxyAgent({ server: proxyFromEnv });
   }

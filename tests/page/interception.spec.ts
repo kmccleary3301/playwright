@@ -35,7 +35,7 @@ it('should work with navigation @smoke', async ({ page, server }) => {
   expect(requests.get('style.css').isNavigationRequest()).toBe(false);
 });
 
-it('should intercept after a service worker', async ({ page, server, browserName, isAndroid }) => {
+it('should intercept after a service worker', async ({ page, server, browserName, isAndroid, isBidi }) => {
   it.skip(isAndroid);
 
   await page.goto(server.PREFIX + '/serviceworkers/fetchdummy/sw.html');
@@ -63,8 +63,8 @@ it('should intercept after a service worker', async ({ page, server, browserName
   const nonInterceptedResponse = await page.evaluate(() => window['fetchDummy']('passthrough'));
   expect(nonInterceptedResponse).toBe('FAILURE: Not Found');
 
-  // Firefox does not want to fetch the redirect for some reason.
-  if (browserName !== 'firefox') {
+  // Firefox/Juggler does not want to fetch the redirect for some reason.
+  if (browserName !== 'firefox' || isBidi) {
     // Page route is not applied to service worker initiated fetch with redirect.
     server.setRedirect('/serviceworkers/fetchdummy/passthrough', '/simple.json');
     const redirectedResponse = await page.evaluate(() => window['fetchDummy']('passthrough'));
@@ -133,6 +133,15 @@ it('should work with glob', async () => {
   // Path and search query are case-sensitive
   expect(urlMatches(undefined, 'https://playwright.dev/foobar', 'https://playwright.dev/fooBAR')).toBeFalsy();
   expect(urlMatches(undefined, 'https://playwright.dev/foobar?a=b', 'https://playwright.dev/foobar?A=B')).toBeFalsy();
+
+  // Literal globs are normalized through new URL(), so explicit default ports,
+  // percent-encoding and IDN hosts match request.url() which is already normalized.
+  expect(urlMatches(undefined, 'http://example.com/path', 'http://example.com:80/path')).toBeTruthy();
+  expect(urlMatches(undefined, 'https://example.com/path', 'https://example.com:443/path')).toBeTruthy();
+  expect(urlMatches(undefined, 'http://example.com:8080/path', 'http://example.com:8080/path')).toBeTruthy();
+  expect(urlMatches(undefined, 'http://localhost/', 'http://localhost:80/**')).toBeTruthy();
+  expect(urlMatches(undefined, 'http://example.com/foo%20bar', 'http://example.com/foo bar')).toBeTruthy();
+  expect(urlMatches(undefined, 'http://xn--mnchen-3ya.de/', 'http://münchen.de/')).toBeTruthy();
 
   expect(urlMatches(undefined, 'https://localhost:3000/?a=b', '**/?a=b')).toBeTruthy();
   expect(urlMatches(undefined, 'https://localhost:3000/?a=b', '**?a=b')).toBeTruthy();

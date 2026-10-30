@@ -37,6 +37,7 @@ test.beforeEach(({ platform, browserName, channel }) => {
   test.slow(platform === 'linux' && (browserName === 'webkit'), 'WebKit/Linux tests are consistently slower on some Linux environments. Most likely WebContent process is not getting terminated properly and is causing the slowdown.');
   test.skip(channel === 'webkit-wsl', 'WebKit on WSL is even slower than above ^^ - skipping for now');
   test.skip(browserName === 'chromium' && utils.hostPlatform.startsWith('ubuntu24.04'), 'never dispatches the crash event');
+  test.skip(browserName === 'webkit' && utils.hostPlatform.startsWith('debian13'), 'never dispatches the crash event');
 });
 
 test('should emit crash event when page crashes', async ({ page, crash }) => {
@@ -98,12 +99,19 @@ test('should be able to close context when page crashes', async ({ isAndroid, pa
   await page.context().close();
 });
 
-test('should be able to close page after crash', async ({ page, crash }) => {
+test('should be able to close page after crash', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42956' },
+}, async ({ page, crash }) => {
   await page.setContent(`<div>This page should crash</div>`);
   crash();
   await page.waitForEvent('crash');
+  // Give the browser a chance to erroneously "close" the crashed page.
+  await new Promise(f => setTimeout(f, 3000));
+  expect(page.isClosed()).toBe(false);
+  expect(page.context().pages()).toEqual([page]);
   await page.close();
   expect(page.isClosed()).toBe(true);
+  expect(page.context().pages()).toEqual([]);
 });
 
 test.fixme('should reject in-flight worker.evaluate when page crashes', async ({ page, crash, server }) => {

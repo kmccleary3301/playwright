@@ -37,20 +37,19 @@ import type { RegisteredListener } from '@utils/eventsHelper';
 import type { APIRequestEvent, APIRequestFinishedEvent } from '../fetch';
 import type { Worker } from '../page';
 import type { HeadersArray, LifecycleEvent } from '../types';
-import type * as har from '@trace/har';
+import type * as har from '@isomorphic/trace/versions/har';
 
 const FALLBACK_HTTP_VERSION = 'HTTP/1.1';
 
 export interface HarTracerDelegate {
   onEntryStarted(entry: har.Entry): void;
   onEntryFinished(entry: har.Entry): void;
-  onContentBlob(sha1: string, buffer: Buffer): void;
-  onContentBlobAppend(sha1: string, text: string): void;
+  onContentBlob(shortName: string, buffer: Buffer): string;
+  onContentBlobAppend(shortName: string, text: string): string;
 }
 
 type HarTracerOptions = {
   content: 'omit' | 'attach' | 'embed';
-  includeTraceInfo: boolean;
   recordRequestOverrides: boolean;
   waitForContentOnStop: boolean;
   urlFilter?: string | RegExp;
@@ -105,11 +104,7 @@ export class HarTracer {
       return;
     this._options.omitScripts = options.omitScripts;
     this._started = true;
-    const apiRequest = this._context instanceof APIRequestContext ? this._context : this._context.fetchRequest;
-    this._eventListeners = [
-      eventsHelper.addEventListener(apiRequest, APIRequestContext.Events.Request, (event: APIRequestEvent) => this._onAPIRequest(event)),
-      eventsHelper.addEventListener(apiRequest, APIRequestContext.Events.RequestFinished, (event: APIRequestFinishedEvent) => this._onAPIRequestFinished(event)),
-    ];
+    this._eventListeners = [];
     if (this._context instanceof BrowserContext) {
       this._eventListeners.push(
           eventsHelper.addEventListener(this._context, BrowserContext.Events.Page, (page: Page) => this._createPageEntryIfNeeded(page)),
@@ -124,6 +119,12 @@ export class HarTracer {
       );
       for (const page of this._context.pages())
         this._createPageEntryIfNeeded(page);
+    }
+    if (this._context instanceof APIRequestContext) {
+      this._eventListeners.push(
+          eventsHelper.addEventListener(this._context, APIRequestContext.Events.Request, (event: APIRequestEvent) => this._onAPIRequest(event)),
+          eventsHelper.addEventListener(this._context, APIRequestContext.Events.RequestFinished, (event: APIRequestFinishedEvent) => this._onAPIRequestFinished(event)),
+      );
     }
   }
 
@@ -211,7 +212,7 @@ export class HarTracer {
     if (!this._shouldIncludeEntryWithUrl(event.url.toString()))
       return;
     const harEntry = createHarEntry(undefined, event.method, event.url, undefined, this._options);
-    harEntry._apiRequest = true;
+    harEntry._apiRequestRef = this._context.guid;
     if (!this._options.omitCookies)
       harEntry.request.cookies = event.cookies;
     harEntry.request.headers = Object.entries(event.headers).map(([name, value]) => ({ name, value }));
@@ -264,9 +265,12 @@ export class HarTracer {
     const contentType = event.headers['content-type'];
     if (contentType)
       content.mimeType = contentType;
-    this._storeResponseContent(event.body, content, 'other');
-    if (!this._options.omitSizes)
-      harEntry.response.bodySize = event.body?.length ?? 0;
+    // Keep the size as -1 "not available" when we did not actually read the body.
+    if (event.body) {
+      this._storeResponseContent(event.body, content, 'other');
+      if (!this._options.omitSizes)
+        harEntry.response.bodySize = event.body.length;
+    }
 
     if (this._started)
       this._delegate.onEntryFinished(harEntry);
@@ -284,6 +288,9 @@ export class HarTracer {
 
     const pageEntry = this._createPageEntryIfNeeded(page);
     const harEntry = createHarEntry(pageEntry?.id, request.method(), url, request.frame()?.guid, this._options, request.wallTimeMs());
+    const serviceWorker = request.serviceWorker();
+    if (serviceWorker)
+      harEntry._serviceWorkerRef = serviceWorker.guid;
     harEntry._resourceType = request.resourceType();
     this._recordRequestHeadersAndCookies(harEntry, request.headers());
     harEntry.request.postData = this._postDataForRequest(request, this._options.content);
@@ -409,6 +416,8 @@ export class HarTracer {
 
     if (request._failureText !== null)
       harEntry.response._failureText = request._failureText;
+    if (harEntry._monotonicTime && harEntry.time === -1)
+      harEntry.time = monotonicTime() - harEntry._monotonicTime;
     this._recordRequestOverrides(harEntry, request);
     if (this._started)
       this._delegate.onEntryFinished(harEntry);
@@ -446,7 +455,7 @@ export class HarTracer {
     const harEntry = createHarEntry(pageEntry?.id, method, url, page.mainFrame().guid, this._options, webSocket.wallTimeMs());
     harEntry._resourceType = 'websocket';
 
-    let sha1: string | undefined = undefined;
+    const shortName = createGuid() + '.jsonl';
     const recordMessage = (type: 'send' | 'receive', opcode: number, data: string, wallTimeMs: number) => {
       if (this._omitWebSocketFrames)
         return;
@@ -455,16 +464,9 @@ export class HarTracer {
         harEntry._webSocketMessages ??= [];
         harEntry._webSocketMessages.push(message);
       } else if (this._options.content === 'attach') {
-        if (!sha1) {
-          sha1 = createGuid() + '.jsonl';
-          if (this._options.includeTraceInfo)
-            harEntry.response.content._sha1 = sha1;
-          else
-            harEntry.response.content._file = sha1;
-        }
 
         if (this._started)
-          this._delegate.onContentBlobAppend(sha1, JSON.stringify(message) + '\n');
+          harEntry.response.content._file = this._delegate.onContentBlobAppend(shortName, JSON.stringify(message) + '\n');
       }
     };
 
@@ -481,9 +483,9 @@ export class HarTracer {
         oldestWallTimeMs = wallTimeMs;
       if (wallTimeMs > newestWallTimeMs)
         newestWallTimeMs = wallTimeMs;
-      if (oldestWallTimeMs === newestWallTimeMs)
-        return;
 
+      // On coarse clocks all frames may share a single timestamp, in which case
+      // the duration is reported as zero rather than left unknown.
       harEntry.time = newestWallTimeMs - oldestWallTimeMs;
     };
 
@@ -542,12 +544,7 @@ export class HarTracer {
       this._delegate.onEntryStarted(harEntry);
   }
 
-  private _storeResponseContent(buffer: Buffer | undefined, content: har.Content, resourceType: string) {
-    if (!buffer) {
-      content.size = 0;
-      return;
-    }
-
+  private _storeResponseContent(buffer: Buffer, content: har.Content, resourceType: string) {
     if (!this._options.omitSizes)
       content.size = buffer.length;
 
@@ -561,13 +558,9 @@ export class HarTracer {
         content.encoding = 'base64';
       }
     } else if (this._options.content === 'attach') {
-      const sha1 = calculateSha1(buffer) + '.' + (mime.getExtension(content.mimeType) || 'dat');
-      if (this._options.includeTraceInfo)
-        content._sha1 = sha1;
-      else
-        content._file = sha1;
+      const shortName = calculateSha1(buffer) + '.' + (mime.getExtension(content.mimeType) || 'dat');
       if (this._started)
-        this._delegate.onContentBlob(sha1, buffer);
+        content._file = this._delegate.onContentBlob(shortName, buffer);
     }
   }
 
@@ -722,12 +715,8 @@ export class HarTracer {
       result.text = postData.toString();
 
     if (content === 'attach') {
-      const sha1 = calculateSha1(postData) + '.' + (mime.getExtension(contentType) || 'dat');
-      if (this._options.includeTraceInfo)
-        result._sha1 = sha1;
-      else
-        result._file = sha1;
-      this._delegate.onContentBlob(sha1, postData);
+      const shortName = calculateSha1(postData) + '.' + (mime.getExtension(contentType) || 'dat');
+      result._file = this._delegate.onContentBlob(shortName, postData);
     }
 
     if (contentType === 'application/x-www-form-urlencoded') {
@@ -778,8 +767,8 @@ function createHarEntry(pageRef: string | undefined, method: string, url: URL, f
       wait: -1,
       receive: -1
     },
-    _frameref: options.includeTraceInfo ? frameref : undefined,
-    _monotonicTime: options.includeTraceInfo ? monotonicTime() : undefined,
+    _frameref: frameref,
+    _monotonicTime: monotonicTime(),
   };
   return harEntry;
 }

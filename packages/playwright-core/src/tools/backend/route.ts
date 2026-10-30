@@ -15,6 +15,7 @@
  */
 
 import * as z from 'zod';
+import { escapeWithQuotes } from '@isomorphic/stringUtils';
 import { defineTool } from './tool';
 
 import type * as playwright from '../../..';
@@ -39,10 +40,18 @@ const route = defineTool({
   },
 
   handle: async (context, params, response) => {
-    const addHeaders = params.headers ? Object.fromEntries(params.headers.map(h => {
-      const colonIndex = h.indexOf(':');
-      return [h.substring(0, colonIndex).trim(), h.substring(colonIndex + 1).trim()];
-    })) : undefined;
+    let addHeaders: Record<string, string> | undefined;
+    if (params.headers) {
+      addHeaders = {};
+      for (const h of params.headers) {
+        const colonIndex = h.indexOf(':');
+        if (colonIndex <= 0) {
+          response.addError(`Invalid header "${h}": expected "Name: Value"`);
+          return;
+        }
+        addHeaders[h.substring(0, colonIndex).trim()] = h.substring(colonIndex + 1).trim();
+      }
+    }
     const removeHeaders = params.removeHeaders ? params.removeHeaders.split(',').map(h => h.trim()) : undefined;
 
     const handler = async (route: playwright.Route) => {
@@ -81,7 +90,7 @@ const route = defineTool({
 
     await context.addRoute(entry);
     response.addTextResult(`Route added for pattern: ${params.pattern}`);
-    response.addCode(`await page.context().route('${params.pattern}', async route => { /* route handler */ });`);
+    response.addCode(`await page.context().route(${escapeWithQuotes(params.pattern)}, async route => { /* route handler */ });`);
   },
 });
 

@@ -14,23 +14,36 @@
  * limitations under the License.
  */
 
-import jpegjs from 'jpeg-js';
-import { PNG } from 'pngjs';
+import path from 'path';
+
 import * as z from 'zod';
 import { formatObject } from '@isomorphic/stringUtils';
 
-import { scaleImageToSize } from '@isomorphic/imageUtils';
 import { defineTabTool } from './tool';
 import { optionalElementSchema } from './snapshot';
 
 import type * as playwright from '../../..';
 
+type ImageFormat = 'png' | 'jpeg' | 'webp';
+
 const screenshotSchema = optionalElementSchema.extend({
-  type: z.enum(['png', 'jpeg']).default('png').describe('Image format for the screenshot. Default is png.'),
-  filename: z.string().optional().describe('File name to save the screenshot to. Defaults to `page-{timestamp}.{png|jpeg}` if not specified. Prefer relative file names to stay within the output directory.'),
+  type: z.enum(['png', 'jpeg', 'webp']).optional().describe('Image format for the screenshot. If unset, inferred from the filename extension, otherwise png.'),
+  filename: z.string().optional().describe('File name to save the screenshot to. Relative file names are resolved against the workspace root. If not specified, the screenshot is saved into the output directory as `page-{timestamp}.{png|jpeg|webp}`.'),
   fullPage: z.boolean().optional().describe('When true, takes a screenshot of the full scrollable page, instead of the currently visible viewport. Cannot be used with element screenshots.'),
   scale: z.enum(['css', 'device']).default('css').describe('Image resolution scale. "css" produces a screenshot sized in CSS pixels (smaller, consistent across devices). "device" produces a high-resolution screenshot using device pixels (larger, accounts for the device pixel ratio). Default is css.'),
 });
+
+function inferTypeFromFilename(filename: string | undefined): ImageFormat | undefined {
+  if (!filename)
+    return undefined;
+  switch (path.extname(filename).toLowerCase()) {
+    case '.png': return 'png';
+    case '.jpg':
+    case '.jpeg': return 'jpeg';
+    case '.webp': return 'webp';
+  }
+  return undefined;
+}
 
 const screenshot = defineTabTool({
   capability: 'core',
@@ -46,10 +59,10 @@ const screenshot = defineTabTool({
     if (params.fullPage && params.target)
       throw new Error('fullPage cannot be used with element screenshots.');
 
-    const fileType = params.type || 'png';
+    const fileType: ImageFormat = params.type ?? inferTypeFromFilename(params.filename) ?? 'png';
     const options: playwright.PageScreenshotOptions = {
       type: fileType,
-      quality: fileType === 'png' ? undefined : 90,
+      quality: fileType === 'jpeg' ? 90 : undefined,
       scale: params.scale,
       ...tab.actionTimeoutOptions,
       ...(params.fullPage !== undefined && { fullPage: params.fullPage })
@@ -59,7 +72,7 @@ const screenshot = defineTabTool({
     const target = params.target ? await tab.targetLocator({ element: params.element, target: params.target }) : null;
     const data = target ? await target.locator.screenshot(options) : await tab.page.screenshot(options);
 
-    const resolvedFile = await response.resolveClientFile({ prefix: target ? 'element' : 'page', ext: fileType, suggestedFilename: params.filename }, `Screenshot of ${screenshotTargetLabel}`);
+    const resolvedFile = await response.resolveClientOutputFile({ prefix: target ? 'element' : 'page', ext: fileType, suggestedFilename: params.filename }, `Screenshot of ${screenshotTargetLabel}`);
 
     response.addCode(`// Screenshot ${screenshotTargetLabel} and save it as ${resolvedFile.relativeName}`);
     if (target)
@@ -72,24 +85,6 @@ const screenshot = defineTabTool({
       await response.registerImageResult(data, fileType);
   }
 });
-
-export function scaleImageToFitMessage(buffer: Buffer, imageType: 'png' | 'jpeg'): Buffer {
-  // https://docs.claude.com/en/docs/build-with-claude/vision#evaluate-image-size
-  // Not more than 1.15 megapixel, linear size not more than 1568.
-
-  const image = imageType === 'png' ? PNG.sync.read(buffer) : jpegjs.decode(buffer, { maxMemoryUsageInMB: 512 });
-  const pixels = image.width * image.height;
-
-  const shrink = Math.min(1568 / image.width, 1568 / image.height, Math.sqrt(1.15 * 1024 * 1024 / pixels));
-  if (shrink > 1)
-    return buffer;
-
-  const width = image.width * shrink | 0;
-  const height = image.height * shrink | 0;
-  const scaledImage = scaleImageToSize(image, { width, height });
-  // eslint-disable-next-line no-restricted-syntax
-  return imageType === 'png' ? PNG.sync.write(scaledImage as any) : jpegjs.encode(scaledImage, 80).data;
-}
 
 export default [
   screenshot,

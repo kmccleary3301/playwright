@@ -31,7 +31,7 @@ interface TaggedAsElementHandle<T> {
   __elementhandle: T;
 }
 type NoHandles<Arg> = Arg extends TaggedAsJSHandle<any> ? never : (Arg extends object ? { [Key in keyof Arg]: NoHandles<Arg[Key]> } : Arg);
-type Unboxed<Arg> =
+export type Unboxed<Arg> =
   Arg extends TaggedAsElementHandle<infer T> ? T :
     Arg extends TaggedAsJSHandle<infer T> ? T :
       Arg extends NoHandles<Arg> ? Arg :
@@ -221,6 +221,10 @@ export class JSHandle<T = any> extends SdkObject {
       if ((globalThis as any).leakedJSHandles)
         (globalThis as any).leakedJSHandles.delete(this);
     }
+  }
+
+  [Symbol.dispose]() {
+    this.dispose();
   }
 
   override toString(): string {

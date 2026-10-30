@@ -18,7 +18,7 @@ import { test, expect } from '@playwright/test';
 import { SnapshotRenderer } from '../../packages/isomorphic/trace/snapshotRenderer';
 import { LRUCache } from '../../packages/isomorphic/lruCache';
 import { stripAnsiEscapes } from '../../packages/isomorphic/stringUtils';
-import type { FrameSnapshot } from '../../packages/trace/src/snapshot';
+import type { FrameSnapshot } from '../../packages/isomorphic/trace/trace';
 
 function makeSnapshot(overrides: Partial<FrameSnapshot> = {}): FrameSnapshot {
   return {
@@ -43,10 +43,23 @@ for (const [name, overrides] of [
   test(`snapshot renderer escapes attacker-controlled ${name} in script context`, () => {
     const renderer = new SnapshotRenderer(new LRUCache(1_000_000), [], [makeSnapshot(overrides)], [], 0);
     const { html } = renderer.render();
-    expect(html.match(/<script>/g)).toHaveLength(1);
+    expect(html.match(/<script[ >]/g)).toHaveLength(1);
     expect(html.match(/<\/script>/g)).toHaveLength(1);
   });
 }
+
+test('snapshot renderer nonces the bootstrap script', () => {
+  const renderer = new SnapshotRenderer(new LRUCache(1_000_000), [], [makeSnapshot()], [], 0);
+  const { html, scriptNonce } = renderer.render();
+  expect(scriptNonce).toMatch(/^[0-9a-f]{32}$/);
+  expect(html).toContain(`<script nonce="${scriptNonce}">`);
+  // The html is cached, so repeated renders must keep returning the nonce that is
+  // baked into it - it is sent back in the Content-Security-Policy header.
+  expect(renderer.render().scriptNonce).toBe(scriptNonce);
+  // A different snapshot gets a different nonce.
+  const other = new SnapshotRenderer(new LRUCache(1_000_000), [], [makeSnapshot()], [], 0);
+  expect(other.render().scriptNonce).not.toBe(scriptNonce);
+});
 
 test('snapshot renderer strips event handler attributes', () => {
   const renderer = new SnapshotRenderer(new LRUCache(1_000_000), [], [makeSnapshot({
@@ -111,6 +124,34 @@ test('snapshot renderer handles case-insensitive iframe tag names', () => {
   expect(html).not.toContain(' srcdoc=');
   expect(html).toContain('__playwright_srcdoc__');
   expect(html).toContain('__playwright_src__');
+});
+
+test('snapshot renderer drops unsafe tag names that smuggle attributes', () => {
+  const renderer = new SnapshotRenderer(new LRUCache(1_000_000), [], [makeSnapshot({
+    html: ['HTML', {}, ['BODY', {}, ['img src=x onerror=alert(1)', {}], 'safe']],
+  })], [], 0);
+  const { html } = renderer.render();
+  expect(html).not.toContain('onerror=alert(1)');
+  expect(html).not.toContain('<img src=x');
+  expect(html).toContain('safe');
+});
+
+test('snapshot renderer still renders ordinary custom elements', () => {
+  const renderer = new SnapshotRenderer(new LRUCache(1_000_000), [], [makeSnapshot({
+    html: ['HTML', {}, ['BODY', {},
+      ['MY-WIDGET', { 'id': 'w' }, 'hello'],
+      ['MY-WIDGET_V2', { 'id': 'w2' }, 'v2'],
+      ['MY-WIDGET.V2', { 'id': 'w3' }, 'dot'],
+      ['math-α', { 'id': 'm' }, 'alpha'],
+      ['my-élément', { 'id': 'e' }, 'elem'],
+    ]],
+  })], [], 0);
+  const { html } = renderer.render();
+  expect(html).toContain('<MY-WIDGET id="w">hello</MY-WIDGET>');
+  expect(html).toContain('<MY-WIDGET_V2 id="w2">v2</MY-WIDGET_V2>');
+  expect(html).toContain('<MY-WIDGET.V2 id="w3">dot</MY-WIDGET.V2>');
+  expect(html).toContain('<math-α id="m">alpha</math-α>');
+  expect(html).toContain('<my-élément id="e">elem</my-élément>');
 });
 
 test('stripAnsiEscapes should not exhibit polynomial backtracking', () => {

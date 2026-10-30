@@ -15,7 +15,7 @@
  */
 
 import { config as loadEnv } from 'dotenv';
-loadEnv({ path: path.join(__dirname, '..', '..', '.env'), override: true });
+loadEnv({ path: path.join(__dirname, '..', '..', '.env'), override: true, quiet: true });
 process.env.PWTEST_UNDER_TEST = '1';
 
 import { type Config, type PlaywrightTestOptions, type PlaywrightWorkerOptions, type ReporterDescription } from '@playwright/test';
@@ -45,11 +45,13 @@ const testDir = path.join(__dirname, '..');
 const reporters = () => {
   const result: ReporterDescription[] = process.env.CI ? [
     ['dot'],
-    ['json', { outputFile: path.join(outputDir, 'report.json') }],
     ['blob'],
+    ['../config/parquetReporter.ts'],
   ] : [
     ['html', { open: 'on-failure', title: 'Playwright Library Tests' }]
   ];
+  if (process.env.PWTEST_COVERAGE)
+    result.push(['coverage', { outputDir: path.join(__dirname, '..', '..', 'coverage', 'trace-viewer') }]);
   return result;
 };
 
@@ -60,7 +62,7 @@ const config: Config<PlaywrightWorkerOptions & PlaywrightTestOptions & TestModeW
     timeout: 10000,
   },
   maxFailures: 200,
-  timeout: video ? 60000 : 30000,
+  timeout: video || (process.platform === 'darwin' && process.arch === 'x64') ? 60000 : 30000,
   globalTimeout: 7200000,
   workers: undefined,
   fullyParallel: !process.env.CI,

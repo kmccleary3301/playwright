@@ -30,14 +30,12 @@ import { applySuggestedRebaselines, clearSuggestedRebaselines } from './rebase';
 import { TaskRunner } from './taskRunner';
 import { detectChangedTestFiles } from './vcs';
 import { cc, config as commonConfig, FullConfigInternal, suiteUtils, test as testNs } from '../common';
-import { createTestGroups } from '../runner/testGroups';
+import { createTestGroups, shuffleTestGroups } from '../runner/testGroups';
 import { createTitleMatcher, forceRegExp, removeDirAndLogToConsole } from '../util';
 
 import type { TestGroup } from '../runner/testGroups';
 import type { EnvByProjectId } from './dispatcher';
-import type { TestRunnerPluginRegistration } from '../plugins';
 import type { Task } from './taskRunner';
-import type { ReporterDescription } from '../../types/test';
 import type { FullResult, TestError } from '../../types/testReporter';
 import type { Matcher, TestCaseFilter } from '../util';
 import type { InternalReporter } from '../reporters/internalReporter';
@@ -61,6 +59,7 @@ export type TestRunOptions = {
   grepInvert?: string;
   onlyChanged?: string;
   projectFilter?: string[];
+  includeNonDefaultProjects?: boolean;
   listMode?: boolean;
   passWithNoTests?: boolean;
   lastFailed?: boolean;
@@ -72,7 +71,6 @@ export type TestRunOptions = {
   pauseAtEnd?: boolean;
   onTestPaused?: (params: TestPausedParams) => void;
   preserveOutputDir?: boolean;
-  additionalReporters?: ReporterDescription[];
   shardWeights?: number[];
 };
 
@@ -101,7 +99,8 @@ export class TestRun {
     this.config = config;
     this.options = options ?? {};
     this.reporter = reporter;
-    this.filteredProjects = filterProjects(config.projects, this.options.projectFilter);
+    this.filteredProjects = filterProjects(config.projects, this.options.projectFilter, this.options.includeNonDefaultProjects);
+    config.config.filteredProjects = this.filteredProjects.map(p => p.project);
   }
 
   onTestPaused(params: TestPausedParams) {
@@ -166,7 +165,6 @@ export function createRunTestsTasks(config: FullConfigInternal) {
   return [
     createPhasesTask(),
     createReportBeginTask(),
-    ...config.plugins.map(plugin => createPluginBeginTask(plugin)),
     createRunTestsTask(),
   ];
 }
@@ -176,8 +174,6 @@ export function createClearCacheTask(config: FullConfigInternal): Task<TestRun> 
     title: 'clear cache',
     setup: async () => {
       await removeDirAndLogToConsole(cc.cacheDir);
-      for (const plugin of config.plugins)
-        await plugin.instance?.clearCache?.();
     },
   };
 }
@@ -206,18 +202,6 @@ export function createPluginSetupTasks(config: FullConfigInternal): Task<TestRun
       await plugin.instance?.teardown?.();
     },
   }));
-}
-
-function createPluginBeginTask(plugin: TestRunnerPluginRegistration): Task<TestRun> {
-  return {
-    title: 'plugin begin',
-    setup: async testRun => {
-      await plugin.instance?.begin?.(testRun.rootSuite!);
-    },
-    teardown: async () => {
-      await plugin.instance?.end?.();
-    },
-  };
 }
 
 function createGlobalSetupTask(file: string, config: FullConfigInternal): Task<TestRun> {
@@ -302,7 +286,7 @@ export function createListFilesTask(): Task<TestRun> {
   };
 }
 
-export function createLoadTask(mode: 'out-of-process' | 'in-process', options: { filterOnly: boolean, failOnLoadErrors: boolean, doNotRunDepsOutsideProjectFilter?: boolean, populateDependencies?: boolean }): Task<TestRun> {
+export function createLoadTask(mode: 'out-of-process' | 'in-process', options: { filterOnly: boolean, failOnLoadErrors: boolean, doNotRunDepsOutsideProjectFilter?: boolean }): Task<TestRun> {
   return {
     title: 'load tests',
     setup: async (testRun, errors, softErrors) => {
@@ -343,11 +327,6 @@ export function createLoadTask(mode: 'out-of-process' | 'in-process', options: {
 
       await collectProjectsAndTestFiles(testRun, !!options.doNotRunDepsOutsideProjectFilter);
       await loadFileSuites(testRun, mode, options.failOnLoadErrors ? errors : softErrors);
-
-      if (testRun.options.onlyChanged || options.populateDependencies) {
-        for (const plugin of testRun.config.plugins)
-          await plugin.instance?.populateDependencies?.();
-      }
 
       if (testRun.options.onlyChanged) {
         const changedFiles = await detectChangedTestFiles(testRun.options.onlyChanged, testRun.config.configDir);
@@ -395,6 +374,9 @@ function createPhasesTask(): Task<TestRun> {
       const projectToSuite = new Map(testRun.rootSuite!.suites.map(suite => [suite._fullProject!, suite]));
       const allProjects = [...projectToSuite.keys()];
       const teardownToSetups = buildTeardownToSetupsMap(allProjects);
+      // Teardown projects keep running after maxFailures is reached, so that cleanup
+      // is not skipped. Nothing to ignore when maxFailures cannot stop the run.
+      const ignoreMaxFailuresProjectIds = new Set(testRun.config.config.maxFailures > 0 ? [...teardownToSetups.keys()].map(project => project.id) : []);
       const teardownToSetupsDependents = new Map<commonConfig.FullProjectInternal, commonConfig.FullProjectInternal[]>();
       for (const [teardown, setups] of teardownToSetups) {
         const closure = buildDependentProjects(setups, allProjects);
@@ -414,14 +396,17 @@ function createPhasesTask(): Task<TestRun> {
           phaseProjects.push(project);
         }
 
-        // Create a new phase.
         for (const project of phaseProjects)
           processed.add(project);
-        if (phaseProjects.length) {
+        // Projects that ignore maxFailures run in their own phase.
+        for (const ignoreMaxFailures of [false, true]) {
+          const projects = phaseProjects.filter(project => ignoreMaxFailuresProjectIds.has(project.id) === ignoreMaxFailures);
+          if (!projects.length)
+            continue;
           let testGroupsInPhase = 0;
-          const phase: Phase = { dispatcher: new Dispatcher(testRun), projects: [] };
+          const phase: Phase = { dispatcher: new Dispatcher(testRun, { ignoreMaxFailures }), projects: [] };
           testRun.phases.push(phase);
-          for (const project of phaseProjects) {
+          for (const project of projects) {
             const projectSuite = projectToSuite.get(project)!;
             const testGroups = createTestGroups(projectSuite, testRun.config.config.workers);
             phase.projects.push({ project, projectSuite, testGroups });
@@ -433,6 +418,8 @@ function createPhasesTask(): Task<TestRun> {
       }
 
       testRun.config.config.metadata.actualWorkers = Math.min(testRun.config.config.workers, maxConcurrentTestGroups);
+      if (testRun.config.configCLIOverrides.shuffle)
+        testRun.config.config.metadata.shuffleSeed = testRun.config.configCLIOverrides.shuffle;
     },
   };
 }
@@ -463,6 +450,9 @@ function createRunTestsTask(): Task<TestRun> {
           if (!hasFailedDeps)
             phaseTestGroups.push(...testGroups);
         }
+
+        if (testRun.config.configCLIOverrides.shuffle)
+          shuffleTestGroups(phaseTestGroups, testRun.config.configCLIOverrides.shuffle);
 
         if (phaseTestGroups.length) {
           await dispatcher!.run(phaseTestGroups, extraEnvByProjectId);

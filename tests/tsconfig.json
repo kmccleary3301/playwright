@@ -11,13 +11,11 @@
     "baseUrl": "..",
     "paths": {
       "@dashboard/*": ["packages/dashboard/src/*"],
-      "@dvtools/*": ["packages/devtools/src/*"],
       "@injected/*": ["packages/injected/src/*"],
       "@isomorphic/*": ["packages/isomorphic/*"],
       "@utils/*": ["packages/utils/*"],
       "@testIsomorphic/*": ["packages/playwright/src/isomorphic/*"],
       "@recorder/*": ["packages/recorder/src/*"],
-      "@trace/*": ["packages/trace/src/*"],
       "@web/*": ["packages/web/src/*"],
     },
     "esModuleInterop": true,

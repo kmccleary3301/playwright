@@ -15,7 +15,7 @@
  */
 
 import { isError } from '@isomorphic/rtti';
-import { parseSerializedValue, serializeValue } from '../protocol/serializers';
+import { parseSerializedValue, serializeValue, systemErrorCode, systemErrorMessage } from '@protocol/serializers';
 
 import type { SerializedError } from './channels';
 
@@ -37,13 +37,21 @@ export class TargetClosedError extends PlaywrightError {
   }
 }
 
+// mirrors https://github.com/nodejs/node/blob/4e7c07dfe2b253393702545c0ffe2712b21fd3dd/lib/internal/errors.js#L976-L988
+export class AbortError extends PlaywrightError {
+  constructor(message = 'The operation was aborted', options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'AbortError';
+  }
+}
+
 export function isTargetClosedError(error: Error) {
   return error instanceof TargetClosedError;
 }
 
 export function serializeError(e: any): SerializedError {
   if (isError(e))
-    return { error: { message: e.message, stack: e.stack, name: e.name } };
+    return { error: { message: systemErrorMessage(e), stack: e.stack, name: e.name, code: systemErrorCode(e) } };
   return { value: serializeValue(e, value => ({ fallThrough: value })) };
 }
 
@@ -58,8 +66,12 @@ export function parseError(error: SerializedError): PlaywrightError {
     e = new TimeoutError(error.error.message);
   else if (error.error.name === 'TargetClosedError')
     e = new TargetClosedError(error.error.message);
+  else if (error.error.name === 'AbortError')
+    e = new AbortError(error.error.message);
   else
     e = Object.assign(new PlaywrightError(error.error.message), { name: error.error.name });
   e.stack = error.error.stack || '';
+  if (error.error.code !== undefined)
+    (e as any).code = error.error.code;
   return e;
 }

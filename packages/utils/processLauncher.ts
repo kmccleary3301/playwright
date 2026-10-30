@@ -21,6 +21,9 @@ import * as readline from 'readline';
 
 import { removeFolders } from './fileUtils';
 import { isUnderTest } from './debug';
+import { processExit } from '../playwright-core/src/bootstrap';
+
+import type { SpawnOptions } from 'child_process';
 
 export type LaunchProcessOptions = {
   command: string,
@@ -58,8 +61,8 @@ export async function gracefullyCloseAll() {
 export function gracefullyProcessExitDoNotHang(code: number, onExit?: () => Promise<void>) {
   // Force exit after 30 seconds.
   const beforeExit = onExit ? () => onExit().catch(() => {}) : () => Promise.resolve();
-  // eslint-disable-next-line no-restricted-properties
-  const callback = () => beforeExit().then(() => process.exit(code));
+  // eslint-disable-next-line no-restricted-syntax
+  const callback = () => beforeExit().then(() => processExit(code));
 
   setTimeout(callback, 30000);
   // Meanwhile, try to gracefully close all browsers.
@@ -76,11 +79,11 @@ function sigintHandler() {
   const exitWithCode130 = () => {
     // Give tests a chance to see that launched process did exit and dispatch any async calls.
     if (isUnderTest()) {
-      // eslint-disable-next-line no-restricted-properties
-      setTimeout(() => process.exit(130), 1000);
+      // eslint-disable-next-line no-restricted-syntax
+      setTimeout(() => processExit(130), 1000);
     } else {
-      // eslint-disable-next-line no-restricted-properties
-      process.exit(130);
+      // eslint-disable-next-line no-restricted-syntax
+      processExit(130);
     }
   };
 
@@ -232,16 +235,10 @@ export async function launchProcess(options: LaunchProcessOptions): Promise<Laun
       options.log(`[pid=${spawnedProcess.pid}] <will force kill>`);
       // Force kill the browser.
       try {
-        if (process.platform === 'win32') {
-          const taskkillProcess = childProcess.spawnSync(`taskkill /pid ${spawnedProcess.pid} /T /F`, { shell: true });
-          const [stdout, stderr] = [taskkillProcess.stdout.toString(), taskkillProcess.stderr.toString()];
-          if (stdout)
-            options.log(`[pid=${spawnedProcess.pid}] taskkill stdout: ${stdout}`);
-          if (stderr)
-            options.log(`[pid=${spawnedProcess.pid}] taskkill stderr: ${stderr}`);
-        } else {
+        if (process.platform === 'win32')
+          killProcessTree(spawnedProcess.pid);
+        else
           process.kill(-spawnedProcess.pid, 'SIGKILL');
-        }
       } catch (e) {
         options.log(`[pid=${spawnedProcess.pid}] exception while trying to kill process: ${e}`);
         // the process might have already stopped
@@ -270,6 +267,45 @@ export async function launchProcess(options: LaunchProcessOptions): Promise<Laun
   }
 
   return { launchedProcess: spawnedProcess, gracefullyClose, kill: killAndWait };
+}
+
+export function killProcessTree(pid: number) {
+  try {
+    if (process.platform === 'win32')
+      childProcess.spawnSync(`taskkill /pid ${pid} /T /F`, { shell: true, windowsHide: true });
+    else
+      process.kill(pid, 'SIGKILL');
+  } catch {
+    // The process may have already exited.
+  }
+}
+
+export function spawnAsync(cmd: string, args: string[], options: SpawnOptions = {}): Promise<{stdout: string, stderr: string, code: number | null, error?: Error, timedOut?: boolean}> {
+  const { timeout, ...spawnOptions } = options;
+  const child = childProcess.spawn(cmd, args, { windowsHide: true, ...spawnOptions });
+
+  return new Promise(resolve => {
+    let stdout = '';
+    let stderr = '';
+    if (child.stdout)
+      child.stdout.on('data', data => stdout += data.toString());
+    if (child.stderr)
+      child.stderr.on('data', data => stderr += data.toString());
+    // Node's timeout only kills the direct child; 'close' never fires while grandchildren hold the stdio pipes.
+    const timer = timeout ? setTimeout(() => {
+      if (child.pid)
+        killProcessTree(child.pid);
+      resolve({ stdout, stderr, code: null, timedOut: true });
+    }, timeout) : undefined;
+    child.on('close', code => {
+      clearTimeout(timer);
+      resolve({ stdout, stderr, code });
+    });
+    child.on('error', error => {
+      clearTimeout(timer);
+      resolve({ stdout, stderr, code: 0, error });
+    });
+  });
 }
 
 export function envArrayToObject(env: { name: string, value: string }[]): NodeJS.ProcessEnv {

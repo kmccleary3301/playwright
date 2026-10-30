@@ -15,6 +15,7 @@
  */
 
 import * as z from 'zod';
+import { escapeWithQuotes } from '@isomorphic/stringUtils';
 import { defineTool } from './tool';
 
 const cookieList = defineTool({
@@ -32,7 +33,7 @@ const cookieList = defineTool({
   },
 
   handle: async (context, params, response) => {
-    const browserContext = await context.ensureBrowserContext();
+    const browserContext = await context.currentBrowserContext();
     let cookies = await browserContext.cookies();
 
     if (params.domain)
@@ -62,7 +63,7 @@ const cookieGet = defineTool({
   },
 
   handle: async (context, params, response) => {
-    const browserContext = await context.ensureBrowserContext();
+    const browserContext = await context.currentBrowserContext();
     const cookies = await browserContext.cookies();
     const cookie = cookies.find(c => c.name === params.name);
 
@@ -95,7 +96,7 @@ const cookieSet = defineTool({
   },
 
   handle: async (context, params, response) => {
-    const browserContext = await context.ensureBrowserContext();
+    const browserContext = await context.currentBrowserContext();
     const tab = await context.ensureTab();
 
     // Get the current page URL to determine default domain
@@ -135,9 +136,9 @@ const cookieDelete = defineTool({
   },
 
   handle: async (context, params, response) => {
-    const browserContext = await context.ensureBrowserContext();
+    const browserContext = await context.currentBrowserContext();
     await browserContext.clearCookies({ name: params.name });
-    response.addCode(`await page.context().clearCookies({ name: '${params.name}' });`);
+    response.addCode(`await page.context().clearCookies({ name: ${escapeWithQuotes(params.name)} });`);
   },
 });
 
@@ -153,7 +154,7 @@ const cookieClear = defineTool({
   },
 
   handle: async (context, params, response) => {
-    const browserContext = await context.ensureBrowserContext();
+    const browserContext = await context.currentBrowserContext();
     await browserContext.clearCookies();
     response.addCode(`await page.context().clearCookies();`);
   },

@@ -17,45 +17,71 @@
 import * as z from 'zod';
 import { defineTool } from './tool';
 
+const maxWaitSeconds = 30;
+
 const wait = defineTool({
   capability: 'core',
 
   schema: {
     name: 'browser_wait_for',
     title: 'Wait for',
-    description: 'Wait for text to appear or disappear or a specified time to pass',
+    description: 'Wait for text to appear or disappear, a page load state, or a specified time to pass. Use loadState to wait for SPA network activity to settle instead of fixed sleeps. When both text and textGone are provided, waits for the first one to happen.',
     inputSchema: z.object({
-      time: z.number().optional().describe('The time to wait in seconds'),
+      time: z.number().optional().describe(`The time to wait in seconds, at most ${maxWaitSeconds}. When combined with text, textGone, or loadState, serves as a timeout instead of a fixed delay`),
       text: z.string().optional().describe('The text to wait for'),
       textGone: z.string().optional().describe('The text to wait for to disappear'),
+      loadState: z.enum(['load', 'domcontentloaded', 'networkidle']).optional().describe('Wait for a page load state. Use "networkidle" to wait for ongoing page requests to finish, such as SPA data loading.'),
     }),
     type: 'assertion',
   },
 
   handle: async (context, params, response) => {
-    if (!params.text && !params.textGone && !params.time)
-      throw new Error('Either time, text or textGone must be provided');
-
-    if (params.time) {
-      response.addCode(`await new Promise(f => setTimeout(f, ${params.time!} * 1000));`);
-      await new Promise(f => setTimeout(f, Math.min(30000, params.time! * 1000)));
-    }
+    if (!params.text && !params.textGone && !params.time && !params.loadState)
+      throw new Error('Either time, text, textGone or loadState must be provided');
 
     const tab = context.currentTabOrDie();
-    const locator = params.text ? tab.page.getByText(params.text).first() : undefined;
-    const goneLocator = params.textGone ? tab.page.getByText(params.textGone).first() : undefined;
+    const time = params.time ? Math.min(maxWaitSeconds, params.time) : undefined;
+    const timeoutOptions = time ? { timeout: time * 1000 } : tab.actionTimeoutOptions;
+    const outcomes: Promise<{ code: string, result: string }>[] = [];
 
-    if (goneLocator) {
-      response.addCode(`await page.getByText(${JSON.stringify(params.textGone)}).first().waitFor({ state: 'hidden' });`);
-      await goneLocator.waitFor({ state: 'hidden', ...tab.actionTimeoutOptions });
+    if (params.loadState) {
+      outcomes.push(tab.page.waitForLoadState(params.loadState, timeoutOptions).then(() => ({
+        code: `await page.waitForLoadState('${params.loadState}');`,
+        result: `Waited for ${params.loadState} load state`,
+      })));
     }
 
-    if (locator) {
-      response.addCode(`await page.getByText(${JSON.stringify(params.text)}).first().waitFor({ state: 'visible' });`);
-      await locator.waitFor({ state: 'visible', ...tab.actionTimeoutOptions });
+    if (params.text || params.textGone) {
+      const waitForText = async (text: string, state: 'visible' | 'hidden') => {
+        await tab.page.getByText(text).first().waitFor({ state, ...timeoutOptions });
+        return {
+          code: `await page.getByText(${JSON.stringify(text)}).first().waitFor({ state: '${state}' });`,
+          result: `Waited for ${text}`,
+        };
+      };
+      const waits = [
+        params.text ? waitForText(params.text, 'visible') : undefined,
+        params.textGone ? waitForText(params.textGone, 'hidden') : undefined,
+      ].filter(wait => !!wait);
+      // The wait that lost the race will eventually fail, do not report it.
+      for (const wait of waits)
+        wait.catch(() => {});
+      outcomes.push(Promise.race(waits));
     }
 
-    response.addTextResult(`Waited for ${params.text || params.textGone || params.time}`);
+    if (outcomes.length) {
+      for (const outcome of await Promise.all(outcomes)) {
+        response.addCode(outcome.code);
+        response.addTextResult(outcome.result);
+      }
+    } else if (time) {
+      response.addCode(`await new Promise(f => setTimeout(f, ${time} * 1000));`);
+      await new Promise(f => setTimeout(f, time * 1000));
+      if (time !== params.time)
+        response.addTextResult(`Waited for ${time} seconds (requested ${params.time}, maximum is ${maxWaitSeconds})`);
+      else
+        response.addTextResult(`Waited for ${time} seconds`);
+    }
     response.setIncludeSnapshot();
   },
 });

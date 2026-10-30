@@ -14,12 +14,13 @@
  * limitations under the License.
  */
 
-import 'playwright-core/lib/bootstrap';
+import { processExit } from 'playwright-core/lib/bootstrap';
 
 import { ManualPromise } from '@isomorphic/manualPromise';
 import { setTimeOrigin } from '@isomorphic/time';
-import { startProfiling, stopProfiling } from '@utils/profiler';
+import { setBoxedStackPrefixes } from '@utils/stackTrace';
 
+import { packageRoot } from '../package';
 import { serializeError } from '../util';
 
 import type { EnvProducedPayload, ProcessInitParams, TestInfoErrorPayload } from './ipc';
@@ -59,8 +60,8 @@ let gracefullyCloseCalled = false;
 let forceExitInitiated = false;
 
 let processRunner: ProcessRunner | undefined;
-let processName: string | undefined;
 const startingEnv = { ...process.env };
+setBoxedStackPrefixes([packageRoot]);
 
 export function startProcessRunner(create: (params: any) => ProcessRunner) {
   sendMessageToParent({ method: 'ready' });
@@ -72,10 +73,8 @@ export function startProcessRunner(create: (params: any) => ProcessRunner) {
   process.on('message', async (message: any) => {
     if (message.method === '__init__') {
       const { processParams, runnerParams } = message.params as { processParams: ProcessInitParams, runnerParams: any };
-      void startProfiling();
       setTimeOrigin(processParams.timeOrigin);
       processRunner = create(runnerParams);
-      processName = processParams.processName;
       return;
     }
     if (message.method === '__stop__') {
@@ -102,22 +101,26 @@ export function startProcessRunner(create: (params: any) => ProcessRunner) {
 }
 
 const kForceExitTimeout = +(process.env.PWTEST_FORCE_EXIT_TIMEOUT || 30000);
+const kHeartbeatInterval = 1000;
 
 async function gracefullyCloseAndExit(forceExit: boolean) {
   if (forceExit && !forceExitInitiated) {
     forceExitInitiated = true;
     // Force exit after 30 seconds.
-    // eslint-disable-next-line no-restricted-properties
-    setTimeout(() => process.exit(0), kForceExitTimeout);
+    // eslint-disable-next-line no-restricted-syntax
+    setTimeout(() => processExit(0), kForceExitTimeout);
   }
   if (!gracefullyCloseCalled) {
     gracefullyCloseCalled = true;
+    // Heartbeats tell the parent that graceful close is still running, e.g. a fixture
+    // teardown with "timeout: 0", as opposed to a hung process that must be force-killed.
+    const heartbeat = setInterval(() => sendMessageToParent({ method: '__heartbeat__' }), kHeartbeatInterval);
+    heartbeat.unref();
     // Meanwhile, try to gracefully shutdown.
     await processRunner?.gracefullyClose().catch(() => {});
-    if (processName)
-      await stopProfiling(processName).catch(() => {});
-    // eslint-disable-next-line no-restricted-properties
-    process.exit(0);
+    clearInterval(heartbeat);
+    // eslint-disable-next-line no-restricted-syntax
+    processExit(0);
   }
 }
 

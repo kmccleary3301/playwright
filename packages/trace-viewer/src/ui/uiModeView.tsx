@@ -22,7 +22,7 @@ import { TeleSuiteUpdater, type TeleSuiteUpdaterProgress, type TeleSuiteUpdaterT
 import type { TeleTestCase } from '@testIsomorphic/teleReceiver';
 import type * as reporterTypes from 'playwright/types/testReporter';
 import { SplitView } from '@web/components/splitView';
-import type { SourceLocation } from '@isomorphic/trace/traceModel';
+import type { SourceLocation, TraceModel } from '@isomorphic/trace/traceModel';
 import './uiModeView.css';
 import { ToolbarButton } from '@web/components/toolbarButton';
 import { Toolbar } from '@web/components/toolbar';
@@ -61,7 +61,7 @@ const queryParams = {
   reporters: searchParams.has('reporter') ? searchParams.getAll('reporter') : undefined,
   pathSeparator: searchParams.get('pathSeparator') || '/',
 };
-if (queryParams.updateSnapshots && !['all', 'changed', 'none', 'missing'].includes(queryParams.updateSnapshots))
+if (queryParams.updateSnapshots && !['all', 'changed', 'none', 'missing', 'default'].includes(queryParams.updateSnapshots))
   queryParams.updateSnapshots = undefined;
 
 const isMac = navigator.platform === 'MacIntel';
@@ -125,10 +125,11 @@ export const UIModeView: React.FC<{}> = ({
   const [settingsVisible, setSettingsVisible] = React.useState(false);
   const [testingOptionsVisible, setTestingOptionsVisible] = React.useState(false);
   const [revealSource, setRevealSource] = React.useState(false);
+  const [traceModel, setTraceModel] = React.useState<TraceModel | undefined>();
   const onRevealSource = React.useCallback(() => setRevealSource(true), [setRevealSource]);
 
   const [singleWorker, setSingleWorker] = useSetting<boolean>('single-worker', false);
-  const [updateSnapshots, setUpdateSnapshots] = useSetting<reporterTypes.FullConfig['updateSnapshots']>('updateSnapshots', 'missing');
+  const [updateSnapshots, setUpdateSnapshots] = useSetting<reporterTypes.FullConfig['updateSnapshots']>('updateSnapshots', 'default');
   const [onlyChanged, setOnlyChanged] = useSetting<boolean>('only-changed', false);
   const [stopOnFailure, setStopOnFailure] = useSetting<boolean>('stop-on-failure', false);
   const [mergeFiles] = useSetting('mergeFiles', false);
@@ -479,6 +480,7 @@ export const UIModeView: React.FC<{}> = ({
           <TraceView
             pathSeparator={queryParams.pathSeparator}
             item={selectedItem}
+            onModelChange={setTraceModel}
             rootDir={testModel?.config?.rootDir}
             revealSource={revealSource}
             onOpenExternally={location => testServerConnection?.openNoReply({ location: { file: location.file, line: location.line, column: location.column } })}
@@ -551,6 +553,7 @@ export const UIModeView: React.FC<{}> = ({
           { type: 'check', value: singleWorker, set: setSingleWorker, name: 'Single worker' },
           { type: 'check', value: stopOnFailure, set: setStopOnFailure, name: 'Stop on first failure' },
           { type: 'select', options: [
+            { label: 'Default', value: 'default' },
             { label: 'All', value: 'all' },
             { label: 'Changed', value: 'changed' },
             { label: 'Missing', value: 'missing' },
@@ -565,7 +568,7 @@ export const UIModeView: React.FC<{}> = ({
           />
           <div className='section-title'>Settings</div>
         </Toolbar>
-        {settingsVisible && <DefaultSettingsView location='ui-mode' />}
+        {settingsVisible && <DefaultSettingsView location='ui-mode' model={traceModel} />}
       </div>
       }
     />

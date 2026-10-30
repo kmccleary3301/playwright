@@ -475,6 +475,27 @@ test('should work without server', async ({ page, server }) => {
   ]);
 });
 
+test('should route WebSockets in already loaded documents', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/43105' },
+}, async ({ page, server }) => {
+  await page.goto(server.EMPTY_PAGE);
+  const frame = await attachFrame(page, 'frame1', server.EMPTY_PAGE);
+  await page.routeWebSocket(/.*/, ws => {
+    ws.onMessage(message => ws.send('mock-' + message));
+  });
+
+  for (const target of [page.mainFrame(), frame]) {
+    await target.evaluate(({ host }) => {
+      window.log = [];
+      window.ws = new WebSocket('ws://' + host + '/ws');
+      window.ws.addEventListener('message', event => window.log.push(event.data));
+      window.ws.addEventListener('close', () => window.log.push('close'));
+      window.ws.addEventListener('open', () => window.ws.send('hi'));
+    }, { host: server.HOST });
+    await expect.poll(() => target.evaluate(() => window.log)).toEqual(['mock-hi']);
+  }
+});
+
 test('should emit close upon frame navigation', async ({ page, server }) => {
   const { promise, resolve } = withResolvers<WebSocketRoute>();
   await page.routeWebSocket(/.*/, async ws => {
@@ -625,6 +646,30 @@ test('should work with no trailing slash', async ({ page, server }) => {
 
 test('should work with baseURL', async ({ contextFactory, server }) => {
   const context = await contextFactory({ baseURL: 'http://' + server.HOST });
+  const page = await context.newPage();
+
+  await page.routeWebSocket('/ws', ws => {
+    ws.onMessage(message => {
+      ws.send(message);
+    });
+  });
+
+  await setupWS(page, server, 'blob');
+
+  await page.evaluate(async () => {
+    await window.wsOpened;
+    window.ws.send('echo');
+  });
+
+  await expect.poll(() => page.evaluate(() => window.log)).toEqual([
+    'open',
+    `message: data=echo origin=ws://${server.HOST} lastEventId=`,
+  ]);
+});
+
+test('should work with baseURL regardless of scheme casing', async ({ contextFactory, server }) => {
+  // baseURL schemes are case-insensitive, same as everywhere else in URL matching.
+  const context = await contextFactory({ baseURL: 'HTTP://' + server.HOST });
   const page = await context.newPage();
 
   await page.routeWebSocket('/ws', ws => {

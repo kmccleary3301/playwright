@@ -26,7 +26,7 @@ import { traceSnapshot } from './traceSnapshot';
 import { traceScreenshot } from './traceScreenshot';
 import { traceAttachments } from './traceAttachments';
 import { traceAttachment } from './traceAttachments';
-import { installSkill } from './installSkill';
+import { installSkills } from '../utils/installSkills';
 
 import type { Command } from 'commander';
 
@@ -86,11 +86,12 @@ export function addTraceCommands(program: Command, logErrorAndExit: (e: Error) =
   traceCommand
       .command('console')
       .description('show console messages')
+      .option('--grep <pattern>', 'filter by message text pattern')
       .option('--errors-only', 'only show errors')
       .option('--warnings', 'show errors and warnings')
       .option('--browser', 'only browser console messages')
       .option('--stdio', 'only stdout/stderr')
-      .action(async (options: { errorsOnly?: boolean, warnings?: boolean, browser?: boolean, stdio?: boolean }) => {
+      .action(async (options: { grep?: string, errorsOnly?: boolean, warnings?: boolean, browser?: boolean, stdio?: boolean }) => {
         traceConsole(options).catch(logErrorAndExit);
       });
 
@@ -104,11 +105,11 @@ export function addTraceCommands(program: Command, logErrorAndExit: (e: Error) =
   traceCommand
       .command('snapshot <action-id>')
       .description('run a playwright-cli command against a DOM snapshot')
-      .option('--name <name>', 'snapshot phase: before, input, or after')
+      .option('--phase <phase>', 'snapshot phase: before, action, or after')
       .option('--serve', 'serve snapshot on localhost and keep running')
       .allowUnknownOption(true)
       .allowExcessArguments(true)
-      .action(async (actionId: string, options: { name?: string, serve?: boolean }, cmd: Command) => {
+      .action(async (actionId: string, options: { phase?: string, serve?: boolean }, cmd: Command) => {
         try {
           // Collect everything after '--' as the browser command.
           const browserArgs = cmd.args.slice(1);
@@ -145,6 +146,6 @@ export function addTraceCommands(program: Command, logErrorAndExit: (e: Error) =
       .command('install-skill')
       .description('install SKILL.md for LLM integration')
       .action(async () => {
-        installSkill().catch(logErrorAndExit);
+        installSkills(['playwright-trace']).catch(logErrorAndExit);
       });
 }

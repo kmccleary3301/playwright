@@ -162,6 +162,7 @@ const longhandTypes: Record<string, LonghandType> = {
   'outputDir': 'string',
   'outputMaxSize': 'number',
   'imageResponses': 'string',
+  'filePaths': 'string',
   'allowUnrestrictedFileAccess': 'boolean',
   'codegen': 'string',
   'testIdAttribute': 'string',
@@ -180,8 +181,11 @@ const longhandTypes: Record<string, LonghandType> = {
 
   // timeouts
   'timeouts.action': 'number',
+  'timeouts.idle': 'number',
   'timeouts.navigation': 'number',
+  'timeouts.settle': 'number',
 
   // snapshot
   'snapshot.mode': 'string',
+  'snapshot.boxes': 'boolean',
 };

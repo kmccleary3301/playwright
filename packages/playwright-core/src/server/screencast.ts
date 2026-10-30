@@ -14,15 +14,16 @@
  * limitations under the License.
  */
 
-import { ManualPromise } from '@isomorphic/manualPromise';
-import { renderTitleForCall } from '@isomorphic/protocolFormatter';
+import { LongStandingScope } from '@isomorphic/manualPromise';
+import { renderFullTitleForCall } from '@isomorphic/protocolFormatter';
 import { debugLogger } from '@utils/debugLogger';
 import { Page } from './page';
 import { nullProgress } from './progress';
 import { ElementHandle } from './dom';
 
-import type { CallMetadata, InstrumentationListener, SdkObject } from './instrumentation';
+import type { InstrumentationListener, SdkObject } from './instrumentation';
 import type * as types from './types';
+import type { Progress } from './progress';
 
 export type ScreencastClient = {
   onFrame: (frame: types.ScreencastFrame) => Promise<void> | void;
@@ -30,6 +31,7 @@ export type ScreencastClient = {
   dispose: () => void;
   size?: types.Size;
   quality?: number;
+  fps?: number;
 };
 
 type AnnotatePosition = 'top-left' | 'top' | 'top-right' | 'bottom-left' | 'bottom' | 'bottom-right';
@@ -39,22 +41,30 @@ type ActionOptions = {
   position?: AnnotatePosition,
   fontSize?: number,
   cursor?: 'none' | 'pointer',
+  style?: { point?: string, highlight?: string, title?: string },
 };
 
 export class Screencast implements InstrumentationListener {
   readonly page: Page;
-  private _clients = new Map<ScreencastClient, ManualPromise<void>>();
+  private _clients = new Map<ScreencastClient, LongStandingScope>();
   private _actions: ActionOptions | undefined;
   private _size: types.Size | undefined;
   private _lastFrame: types.ScreencastFrame | undefined;
+  private _cursorPoint: types.Point | undefined;
 
   constructor(page: Page) {
     this.page = page;
     this.page.instrumentation.addListener(this, this.page.browserContext);
+    this.page.on(Page.Events.InternalFrameNavigatedToNewDocument, frame => {
+      if (!frame.parentFrame() && this._cursorPoint)
+        this._restoreCursor(this._cursorPoint).catch(e => debugLogger.log('error', e));
+    });
   }
 
   async handlePageOrContextClose() {
     const clients = [...this._clients.keys()];
+    for (const scope of this._clients.values())
+      scope.reject(new Error('Screencast closed'));
     this._clients.clear();
     for (const client of clients) {
       if (client.gracefulClose)
@@ -63,6 +73,8 @@ export class Screencast implements InstrumentationListener {
   }
 
   dispose() {
+    for (const scope of this._clients.values())
+      scope.reject(new Error('Screencast disposed'));
     for (const client of this._clients.keys())
       client.dispose();
     this._clients.clear();
@@ -70,18 +82,39 @@ export class Screencast implements InstrumentationListener {
   }
 
   showActions(options: ActionOptions) {
-    this._actions = options;
+    // Deprecated fontSize is folded into the title style, explicit title style wins.
+    const title = options.fontSize !== undefined ? `font-size: ${options.fontSize}px; ${options.style?.title ?? ''}` : options.style?.title;
+    this._actions = { ...options, style: { ...options.style, title } };
+    if (options.cursor === 'none')
+      this._hideCursor();
   }
 
   hideActions() {
     this._actions = undefined;
+    this._hideCursor();
+  }
+
+  private async _restoreCursor(point: types.Point) {
+    const utility = await this.page.mainFrame().utilityContext();
+    await utility.evaluate(({ injected, point }) => injected.restoreScreencastCursor(point), { injected: await utility.injectedScript(), point });
+  }
+
+  private _hideCursor() {
+    if (!this._cursorPoint)
+      return;
+    this._cursorPoint = undefined;
+    const frame = this.page.mainFrame();
+    frame.raceAgainstEvaluationStallingEvents(async () => {
+      const injectedScript = await frame.existingContext('utility')?.injectedScript();
+      await injectedScript?.evaluate(injected => injected.hideScreencastCursor());
+    }).catch(e => debugLogger.log('error', e));
   }
 
   addClient(client: ScreencastClient): { size: types.Size } {
     const isFirst = this._clients.size === 0;
-    this._clients.set(client, new ManualPromise<void>());
+    this._clients.set(client, new LongStandingScope());
     if (isFirst) {
-      this._startScreencast(client.size, client.quality);
+      this._startScreencast(client.size, client.quality, client.fps);
     } else if (this._lastFrame) {
       // Deliver the cached last frame to the new client so it does not have
       // to wait for the next browser repaint. setTimeout(0) ensures the caller
@@ -96,17 +129,17 @@ export class Screencast implements InstrumentationListener {
   }
 
   removeClient(client: ScreencastClient) {
-    const disconnected = this._clients.get(client);
-    if (!disconnected)
+    const scope = this._clients.get(client);
+    if (!scope)
       return;
     this._clients.delete(client);
     // A departing client must not block frame acks for the remaining clients.
-    disconnected.resolve();
+    scope.reject(new Error('Screencast client removed'));
     if (!this._clients.size)
       this._stopScreencast();
   }
 
-  private _startScreencast(size: types.Size | undefined, quality: number | undefined) {
+  private _startScreencast(size: types.Size | undefined, quality: number | undefined, fps: number | undefined) {
     this._size = size;
     if (!this._size) {
       const viewport = this.page.browserContext._options.viewport || { width: 800, height: 600 };
@@ -117,7 +150,7 @@ export class Screencast implements InstrumentationListener {
       };
     }
 
-    // Make sure both dimensions are odd, this is required for vp8
+    // Make sure both dimensions are even, ffmpeg's pad and crop filters round yuv420p frames down to even sizes.
     this._size = {
       width: this._size.width & ~1,
       height: this._size.height & ~1
@@ -127,6 +160,7 @@ export class Screencast implements InstrumentationListener {
       width: this._size.width,
       height: this._size.height,
       quality: quality ?? 90,
+      fps,
     });
   }
 
@@ -135,27 +169,25 @@ export class Screencast implements InstrumentationListener {
     this.page.delegate.stopScreencast();
   }
 
-  onScreencastFrame(frame: types.ScreencastFrame, ack?: () => void) {
+  async onScreencastFrame(frame: types.ScreencastFrame) {
     this._lastFrame = frame;
+    let syncAck = false;
     const asyncResults: Promise<void>[] = [];
-    for (const [client, disconnected] of this._clients) {
+    for (const [client, scope] of this._clients) {
       const result = client.onFrame(frame);
-      if (!result)
-        continue;
-      asyncResults.push(Promise.race([result.catch(() => {}), disconnected]));
-    }
-    if (ack) {
-      // Ack when any client resolves (OR logic). This ensures that even if
-      // tracing throttles its response, other clients (like video) that resolve
-      // immediately keep frames flowing.
-      if (!asyncResults.length)
-        ack();
+      if (result)
+        asyncResults.push(scope.safeRace(result.catch(() => {})));
       else
-        Promise.race(asyncResults).then(ack);
+        syncAck = true;
     }
+    // Ack when any client resolves (OR logic). This ensures that even if
+    // tracing throttles its response, other clients (like video) that resolve
+    // immediately keep frames flowing.
+    if (!syncAck && asyncResults.length)
+      await Promise.race(asyncResults);
   }
 
-  async onBeforeInputAction(sdkObject: SdkObject, metadata: CallMetadata, point?: types.Point, box?: types.Rect): Promise<void> {
+  async onBeforeInputAction(progress: Progress, sdkObject: SdkObject, point?: types.Point, box?: types.Rect): Promise<void> {
     if (!this._actions)
       return;
 
@@ -163,27 +195,33 @@ export class Screencast implements InstrumentationListener {
     if (page !== this.page)
       return;
 
-    if (!box && (sdkObject instanceof ElementHandle))
+    if (!box && this._actions.style?.highlight && (sdkObject instanceof ElementHandle))
       box = await sdkObject.boundingBox(nullProgress) || undefined;
 
-    const actionTitle = renderTitleForCall(metadata);
-    const utility = await page.mainFrame().utilityContext();
+    const actionTitle = renderFullTitleForCall(progress.metadata, this.page.browserContext._browser.sdkLanguage());
+    const cursor = this._actions?.cursor ?? 'pointer';
+    const lastCursorPoint = this._cursorPoint;
+    if (point && cursor !== 'none')
+      this._cursorPoint = point;
+    const utility = await progress.race(page.mainFrame().utilityContext());
 
     // Run this outside of the progress timer.
-    await utility.evaluate(async options => {
+    const injected = await progress.race(utility.injectedScript());
+    await progress.race(utility.evaluate(async options => {
       const { injected, duration } = options;
       injected.setScreencastAnnotation(options);
       await new Promise(f => injected.utils.builtins.setTimeout(f, duration));
       injected.setScreencastAnnotation(null);
     }, {
-      injected: await utility.injectedScript(),
+      injected,
       duration: this._actions?.duration ?? 500,
       point,
       box,
       actionTitle,
       position: this._actions?.position,
-      fontSize: this._actions?.fontSize,
-      cursor: this._actions?.cursor ?? 'pointer',
-    }).catch(e => debugLogger.log('error', e));
+      cursor,
+      style: this._actions?.style,
+      lastCursorPoint,
+    }).catch(e => debugLogger.log('error', e)));
   }
 }

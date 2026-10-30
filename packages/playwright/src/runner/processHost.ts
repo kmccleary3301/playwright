@@ -21,6 +21,7 @@ import debug from 'debug';
 import { assert } from '@isomorphic/assert';
 import { monotonicTime, timeOrigin } from '@isomorphic/time';
 import { raceAgainstDeadline } from '@isomorphic/timeoutRunner';
+import { killProcessTree } from '@utils/processLauncher';
 
 import type { ipc, processRunner } from '../common';
 
@@ -127,7 +128,6 @@ export class ProcessHost extends EventEmitter {
       return error;
 
     const processParams: ipc.ProcessInitParams = {
-      processName: this._processName,
       timeOrigin: timeOrigin(),
     };
 
@@ -170,26 +170,31 @@ export class ProcessHost extends EventEmitter {
       return;
     const exitPromise = new Promise<void>(f => this.once('exit', () => f()));
     const timeout = +(process.env.PWTEST_CHILD_PROCESS_TIMEOUT || 5 * 60 * 1000);
-    const result = await raceAgainstDeadline(() => exitPromise, monotonicTime() + timeout);
-    if (result.timedOut) {
-      this.emit('processError', { message: `Error: ${this._processName} process did not exit within ${timeout}ms after stop, force-killed it` });
-      this._forceKill();
-      await exitPromise;
+    // Child sends heartbeats while gracefully closing, e.g. running a slow fixture
+    // teardown with "timeout: 0". Only force-kill when heartbeats stop coming.
+    let lastHeartbeat = monotonicTime();
+    const onHeartbeat = () => lastHeartbeat = monotonicTime();
+    this.on('__heartbeat__', onHeartbeat);
+    try {
+      while (true) {
+        const result = await raceAgainstDeadline(() => exitPromise, lastHeartbeat + timeout);
+        if (!result.timedOut)
+          return;
+        if (monotonicTime() < lastHeartbeat + timeout)
+          continue;
+        this.emit('processError', { message: `Error: ${this._processName} process did not exit within ${timeout}ms after stop, force-killed it` });
+        this._forceKill();
+        await exitPromise;
+        return;
+      }
+    } finally {
+      this.off('__heartbeat__', onHeartbeat);
     }
   }
 
   private _forceKill() {
-    const pid = this.process?.pid;
-    if (!pid)
-      return;
-    try {
-      if (process.platform === 'win32')
-        child_process.spawnSync(`taskkill /pid ${pid} /T /F`, { shell: true });
-      else
-        process.kill(pid, 'SIGKILL');
-    } catch {
-      // The process may have already exited.
-    }
+    if (this.process?.pid)
+      killProcessTree(this.process.pid);
   }
 
   didSendStop() {

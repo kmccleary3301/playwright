@@ -18,9 +18,13 @@ import type { APIRequestContext, Browser, BrowserContext, BrowserContextOptions,
 export * from 'playwright-core';
 
 export type BlobReporterOptions = { outputDir?: string, fileName?: string };
-export type ListReporterOptions = { printSteps?: boolean, printFailuresInline?: boolean };
-export type JUnitReporterOptions = { outputFile?: string, stripANSIControlSequences?: boolean, includeProjectInTestName?: boolean, includeRetries?: boolean };
+export type DotReporterOptions = { omitTags?: boolean };
+export type LineReporterOptions = { omitTags?: boolean };
+export type ListReporterOptions = { printSteps?: boolean, printFailuresInline?: boolean, omitTags?: boolean };
+export type GitHubReporterOptions = { omitTags?: boolean };
+export type JUnitReporterOptions = { outputFile?: string, stripANSIControlSequences?: boolean, includeProjectInTestName?: boolean, includeRetries?: boolean, omitTags?: boolean };
 export type JsonReporterOptions = { outputFile?: string };
+export type PerfettoReporterOptions = { outputFile?: string };
 export type HtmlReporterOptions = {
   outputFolder?: string;
   open?: 'always' | 'never' | 'on-failure';
@@ -31,16 +35,18 @@ export type HtmlReporterOptions = {
   noSnippets?: boolean;
   noCopyPrompt?: boolean;
   doNotInlineAssets?: boolean;
+  mergeFiles?: boolean;
 };
 
 export type ReporterDescription = Readonly<
   ['blob'] | ['blob', BlobReporterOptions] |
-  ['dot'] |
-  ['line'] |
+  ['dot'] | ['dot', DotReporterOptions] |
+  ['line'] | ['line', LineReporterOptions] |
   ['list'] | ['list', ListReporterOptions] |
-  ['github'] |
+  ['github'] | ['github', GitHubReporterOptions] |
   ['junit'] | ['junit', JUnitReporterOptions] |
   ['json'] | ['json', JsonReporterOptions] |
+  ['perfetto'] | ['perfetto', PerfettoReporterOptions] |
   ['html'] | ['html', HtmlReporterOptions] |
   ['null'] |
   [string] | [string, any]
@@ -63,7 +69,7 @@ type LiteralUnion<T extends U, U = string> = T | (U & { zz_IGNORE_ME?: never });
 
 interface TestConfig<TestArgs = {}, WorkerArgs = {}> {
   projects?: Project<TestArgs, WorkerArgs>[];
-  reporter?: LiteralUnion<'list'|'dot'|'line'|'github'|'json'|'junit'|'null'|'html', string> | ReporterDescription[];
+  reporter?: LiteralUnion<'list'|'dot'|'line'|'github'|'json'|'junit'|'null'|'html'|'blob'|'perfetto', string> | ReporterDescription[];
   use?: UseOptions<TestArgs, WorkerArgs>;
   webServer?: TestConfigWebServer | TestConfigWebServer[];
 }
@@ -98,6 +104,7 @@ export type TestAnnotation = TestDetailsAnnotation & {
 export type TestDetails = {
   tag?: string | string[];
   annotation?: TestDetailsAnnotation | TestDetailsAnnotation[];
+  lock?: string | string[];
 }
 
 type TestBody<TestArgs> = (args: TestArgs, testInfo: TestInfo) => Promise<unknown> | unknown;
@@ -147,7 +154,7 @@ export interface TestType<TestArgs extends {}, WorkerArgs extends {}> {
       only(title: string, details: TestDetails, callback: () => void): void;
     };
 
-    configure: (options: { mode?: 'default' | 'parallel' | 'serial', retries?: number, timeout?: number }) => void;
+    configure: (options: { mode?: 'default' | 'parallel' | 'serial', retries?: number, timeout?: number, lock?: string | string[] }) => void;
   };
 
   skip(title: string, body: TestBody<TestArgs & WorkerArgs>): void;
@@ -190,8 +197,8 @@ export interface TestType<TestArgs extends {}, WorkerArgs extends {}> {
   afterAll(title: string, inner: (args: TestArgs & WorkerArgs, testInfo: TestInfo) => Promise<any> | any): void;
   use(fixtures: Fixtures<{}, {}, TestArgs, WorkerArgs>): void;
   step: {
-    <T>(title: string, body: (step: TestStepInfo) => T | Promise<T>, options?: { box?: boolean, location?: Location, timeout?: number }): Promise<T>;
-    skip(title: string, body: (step: TestStepInfo) => any | Promise<any>, options?: { box?: boolean, location?: Location, timeout?: number }): Promise<void>;
+    <T>(title: string, body: (step: TestStepInfo) => T | Promise<T>, options?: { box?: boolean, location?: Location, timeout?: number, params?: { [key: string]: any }, subtitle?: string }): Promise<T>;
+    skip(title: string, body: (step: TestStepInfo) => any | Promise<any>, options?: { box?: boolean, location?: Location, timeout?: number, params?: { [key: string]: any }, subtitle?: string }): Promise<void>;
   }
   expect: Expect<{}>;
   extend<T extends {}, W extends {} = {}>(fixtures: Fixtures<T, W, TestArgs, WorkerArgs>): TestType<TestArgs & T, WorkerArgs & W>;
@@ -215,6 +222,9 @@ export type Fixtures<T extends {} = {}, W extends {} = {}, PT extends {} = {}, P
 type BrowserName = 'chromium' | 'firefox' | 'webkit';
 type BrowserChannel = Exclude<LaunchOptions['channel'], undefined>;
 type ColorScheme = Exclude<BrowserContextOptions['colorScheme'], undefined>;
+type Contrast = Exclude<BrowserContextOptions['contrast'], undefined>;
+type ForcedColors = Exclude<BrowserContextOptions['forcedColors'], undefined>;
+type ReducedMotion = Exclude<BrowserContextOptions['reducedMotion'], undefined>;
 type ClientCertificate = Exclude<BrowserContextOptions['clientCertificates'], undefined>[0];
 type ExtraHTTPHeaders = Exclude<BrowserContextOptions['extraHTTPHeaders'], undefined>;
 type Proxy = Exclude<BrowserContextOptions['proxy'], undefined>;
@@ -260,9 +270,10 @@ export interface PlaywrightWorkerOptions {
   channel: BrowserChannel | undefined;
   launchOptions: Omit<LaunchOptions, 'tracesDir'>;
   connectOptions: ConnectOptions | undefined;
+  reuseContext: boolean;
   screenshot: ScreenshotMode | { mode: ScreenshotMode } & Pick<PageScreenshotOptions, 'fullPage' | 'omitBackground'>;
-  trace: TraceMode | /** deprecated */ 'retry-with-trace' | { mode: TraceMode, snapshots?: boolean, screenshots?: boolean, sources?: boolean, attachments?: boolean };
-  video: VideoMode | /** deprecated */ 'retry-with-video' | { mode: VideoMode, size?: ViewportSize, show?: { actions?: { duration?: number, position?: 'top-left' | 'top' | 'top-right' | 'bottom-left' | 'bottom' | 'bottom-right', fontSize?: number }, test?: { level?: 'file' | 'title' | 'step', position?: 'top-left' | 'top' | 'top-right' | 'bottom-left' | 'bottom' | 'bottom-right', fontSize?: number } } };
+  trace: TraceMode | /** deprecated */ 'retry-with-trace' | { mode: TraceMode, snapshots?: boolean | { dom?: boolean, aria?: boolean, screen?: boolean }, screenshots?: boolean, sources?: boolean, attachments?: boolean };
+  video: VideoMode | /** deprecated */ 'retry-with-video' | { mode: VideoMode, size?: ViewportSize, fps?: number, show?: { actions?: { duration?: number, position?: 'top-left' | 'top' | 'top-right' | 'bottom-left' | 'bottom' | 'bottom-right', /** @deprecated Use `style.title` instead. */ fontSize?: number, cursor?: 'none' | 'pointer', style?: { point?: string, highlight?: string, title?: string } }, test?: { level?: 'file' | 'title' | 'step', position?: 'top-left' | 'top' | 'top-right' | 'bottom-left' | 'bottom' | 'bottom-right', fontSize?: number } } };
 }
 
 export type ScreenshotMode = 'off' | 'on' | 'only-on-failure' | 'on-first-failure';
@@ -272,12 +283,14 @@ export interface PlaywrightTestOptions {
   acceptDownloads: boolean;
   bypassCSP: boolean;
   colorScheme: ColorScheme;
+  contrast: Contrast;
   clientCertificates: ClientCertificate[] | undefined;
   deviceScaleFactor: number | undefined;
   extraHTTPHeaders: ExtraHTTPHeaders | undefined;
+  forcedColors: ForcedColors;
   geolocation: Geolocation | undefined;
   hasTouch: boolean;
-  httpCredentials: HTTPCredentials | undefined;
+  httpCredentials: HTTPCredentials | HTTPCredentials[] | undefined;
   ignoreHTTPSErrors: boolean;
   isMobile: boolean;
   javaScriptEnabled: boolean;
@@ -285,6 +298,8 @@ export interface PlaywrightTestOptions {
   offline: boolean;
   permissions: string[] | undefined;
   proxy: Proxy | undefined;
+  reducedMotion: ReducedMotion;
+  screen: ViewportSize | undefined;
   storageState: StorageState | undefined;
   timezoneId: string | undefined;
   userAgent: string | undefined;
@@ -303,10 +318,23 @@ export interface PlaywrightWorkerArgs {
   browser: Browser;
 }
 
+export interface Stories {}
+
+type StoryProps<Story> =
+  Story extends (props: infer Props) => any ? Props :
+  Story extends new (...args: any[]) => { $props: infer Props } ? Props :
+  Story extends new (props: infer Props, ...args: any[]) => any ? Props :
+  Story;
+type StoryId = keyof Stories | (string & {});
+type StoryPropsFor<Id> = Id extends keyof Stories ? StoryProps<Stories[Id]> : Record<string, any>;
+// Explicit mount<typeof Story>() wins over the id lookup; the indexed access keeps Story from being inferred from props.
+type MountProps<Story, Id> = [Story] extends [never] ? StoryPropsFor<Id> : StoryProps<[Story][Story extends any ? 0 : never]>;
+
 export interface PlaywrightTestArgs {
   context: BrowserContext;
   page: Page;
   request: APIRequestContext;
+  mount: <Story = never, Id extends StoryId = StoryId>(storyId: Id, props?: MountProps<Story, Id>) => Promise<Locator & { update(props?: MountProps<Story, Id>): Promise<void>, unmount(): Promise<void> }>;
 }
 
 type ExcludeProps<A, B> = {
@@ -541,4 +569,3 @@ export function mergeExpects<List extends any[]>(...expects: List): MergedExpect
 
 // This is required to not export everything by default. See https://github.com/Microsoft/TypeScript/issues/19545#issuecomment-340490459
 export { };
-

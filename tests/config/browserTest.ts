@@ -21,12 +21,10 @@ import { baseTest } from './baseTest';
 import { RunServer, RemoteServer } from './remoteServer';
 import { utils } from '../../packages/playwright-core/lib/coreBundle';
 import { isBidiChannel, parseHar } from '../config/utils';
-import { createSkipTestPredicate } from '../bidi/expectationUtil';
 import type { PageTestFixtures, PageWorkerFixtures } from '../page/pageTestApi';
 import type { RemoteServerOptions, PlaywrightServer } from './remoteServer';
 import type { BrowserContext, BrowserContextOptions, BrowserType, Page } from 'playwright-core';
-import type { Log } from '../../packages/trace/src/har';
-import type { TestInfo } from '@playwright/test';
+import type { Log } from '../../packages/isomorphic/trace/versions/har';
 
 const { removeFolders, hostPlatform } = utils;
 
@@ -40,9 +38,7 @@ export type BrowserTestWorkerFixtures = PageWorkerFixtures & {
   isElectron: boolean;
   isHeadlessShell: boolean;
   isFrozenWebkit: boolean;
-  nodeVersion: { major: number, minor: number, patch: number };
   isBidi: boolean;
-  bidiTestSkipPredicate: (info: TestInfo) => boolean;
 };
 
 interface StartRemoteServer {
@@ -56,7 +52,6 @@ type BrowserTestTestFixtures = PageTestFixtures & {
   startRemoteServer: StartRemoteServer;
   contextFactory: (options?: BrowserContextOptions) => Promise<BrowserContext>;
   pageWithHar(options?: { outputPath?: string, content?: 'embed' | 'attach' | 'omit', omitContent?: boolean }): Promise<{ context: BrowserContext, page: Page, getLog: () => Promise<Log>, getZip: () => Promise<Map<string, Buffer>> }>
-  autoSkipBidiTest: void;
 };
 
 type ContextFactory = (options?: BrowserContextOptions) => Promise<{ context: BrowserContext, close: () => Promise<void> }>;
@@ -94,11 +89,6 @@ const test = baseTest.extend<BrowserTestTestFixtures & { _contextFactory: Contex
     await run(Number(browserVersion.split('.')[0]));
   }, { scope: 'worker' }],
 
-  nodeVersion: [async ({}, use) => {
-    const [major, minor, patch] = process.versions.node.split('.');
-    await use({ major: +major, minor: +minor, patch: +patch });
-  }, { scope: 'worker' }],
-
   isBidi: [async ({ channel }, use) => {
     await use(isBidiChannel(channel));
   }, { scope: 'worker' }],
@@ -109,8 +99,7 @@ const test = baseTest.extend<BrowserTestTestFixtures & { _contextFactory: Contex
 
   isHeadlessShell: [async ({ browserName, channel, headless }, use) => {
     const isShell = channel === 'chromium-headless-shell' || (!channel && headless);
-    const isToTShell = channel === 'chromium-tip-of-tree-headless-shell' || (channel === 'chromium-tip-of-tree' && headless);
-    await use(browserName === 'chromium' && (isShell || isToTShell));
+    await use(browserName === 'chromium' && isShell);
   }, { scope: 'worker' }],
 
   isFrozenWebkit: [async ({ browserName, isMac, macVersion }, use) => {
@@ -187,7 +176,7 @@ const test = baseTest.extend<BrowserTestTestFixtures & { _contextFactory: Contex
         server = remoteServer;
       } else {
         const runServer = new RunServer();
-        await runServer.start(childProcess, { artifactsDir: options?.artifactsDir });
+        await runServer.start(childProcess, { artifactsDir: options?.artifactsDir, unsafe: options?.unsafe, env: options?.env });
         server = runServer;
       }
       return server;
@@ -220,16 +209,6 @@ const test = baseTest.extend<BrowserTestTestFixtures & { _contextFactory: Contex
     };
     await use(pageWithHar);
   },
-
-  bidiTestSkipPredicate: [async ({ }, run) => {
-    const filter = await createSkipTestPredicate(test.info().project.name);
-    await run(filter);
-  }, { scope: 'worker' }],
-
-  autoSkipBidiTest: [async ({ bidiTestSkipPredicate }, run) => {
-    test.fixme(bidiTestSkipPredicate(test.info()), 'marked as timeout in bidi expectations');
-    await run();
-  }, { auto: true, scope: 'test' }],
 });
 
 export const playwrightTest = test;

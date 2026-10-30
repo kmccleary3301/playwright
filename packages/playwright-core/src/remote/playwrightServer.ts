@@ -84,6 +84,8 @@ export class PlaywrightServer {
           return { error: `HTTP/${request.httpVersion} 428 Precondition Required\r\n\r\n${uaError}` };
       },
 
+      isAllowedPathname: pathname => pathname === this._options.path,
+
       onHeaders: headers => {
         if (process.env.PWTEST_SERVER_WS_HEADERS)
           headers.push(process.env.PWTEST_SERVER_WS_HEADERS!);
@@ -107,7 +109,7 @@ export class PlaywrightServer {
         }
 
         const isExtension = this._options.mode === 'extension';
-        launchOptions = filterLaunchOptions(launchOptions, isExtension || !!this._options.unsafe);
+        launchOptions = filterLaunchOptions(launchOptions, isExtension, !!this._options.unsafe);
 
         // Always override artifacts dir with the one from server options.
         if (this._options.artifactsDir)
@@ -363,7 +365,8 @@ function launchOptionsHash(options: LaunchOptionsWithTimeout) {
   return JSON.stringify(copy);
 }
 
-function filterLaunchOptions(options: LaunchOptionsWithTimeout, allowUnsafe: boolean): LaunchOptionsWithTimeout {
+function filterLaunchOptions(options: LaunchOptionsWithTimeout, isExtension: boolean, unsafe: boolean): LaunchOptionsWithTimeout {
+  const allowUnsafe = isExtension || unsafe;
   return {
     channel: options.channel,
     args: allowUnsafe ? options.args : undefined,
@@ -376,8 +379,8 @@ function filterLaunchOptions(options: LaunchOptionsWithTimeout, allowUnsafe: boo
     firefoxUserPrefs: (isUnderTest() || allowUnsafe) ? options.firefoxUserPrefs : undefined,
     slowMo: options.slowMo,
     executablePath: (isUnderTest() || allowUnsafe) ? options.executablePath : undefined,
-    downloadsPath: allowUnsafe ? options.downloadsPath : undefined,
-    artifactsDir: (isUnderTest() || allowUnsafe) ? options.artifactsDir : undefined,
+    downloadsPath: (isUnderTest() || isExtension) ? options.downloadsPath : undefined,
+    artifactsDir: (isUnderTest() || isExtension) ? options.artifactsDir : undefined,
   };
 }
 

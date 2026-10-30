@@ -24,20 +24,25 @@ export type ToolSchema<Input extends z.Schema> = {
   description: string;
   inputSchema: Input;
   type: 'input' | 'assertion' | 'action' | 'readOnly';
+  _meta?: Record<string, unknown>;
 };
 
 export function toMcpTool(tool: ToolSchema<any>): mcpServer.Tool {
   const readOnly = tool.type === 'readOnly' || tool.type === 'assertion';
+  // Input mode lists parameters that have a default as optional, which is what a caller may omit.
+  const inputSchema = zod.toJSONSchema(tool.inputSchema, { io: 'input' }) as mcpServer.Tool['inputSchema'];
+  delete inputSchema.$schema;
   return {
     name: tool.name,
     description: tool.description,
-    inputSchema: zod.toJSONSchema(tool.inputSchema) as mcpServer.Tool['inputSchema'],
+    inputSchema,
     annotations: {
       title: tool.title,
       readOnlyHint: readOnly,
       destructiveHint: !readOnly,
       openWorldHint: true,
     },
+    ...(tool._meta ? { _meta: tool._meta } : {}),
   };
 }
 

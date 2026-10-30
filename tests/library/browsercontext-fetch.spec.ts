@@ -17,12 +17,15 @@
 import type { LookupAddress } from 'dns';
 import formidable from 'formidable';
 import fs from 'fs';
+import http from 'http';
 import type { IncomingMessage } from 'http';
+import https from 'https';
 import { pipeline } from 'stream';
 import zlib from 'zlib';
 import { contextTest as it, expect } from '../config/browserTest';
 import { suppressCertificateWarning } from '../config/utils';
 import { kTargetClosedErrorMessage } from '../config/errors';
+import { TestServer } from '../config/testserver';
 
 it.skip(({ mode }) => mode !== 'default');
 
@@ -53,6 +56,53 @@ it('fetch should work', async ({ context, server }) => {
   expect(response.headers()['content-type']).toBe('application/json; charset=utf-8');
   expect(response.headersArray()).toContainEqual({ name: 'Content-Type', value: 'application/json; charset=utf-8' });
   expect(await response.text()).toBe('{"foo": "bar"}\n');
+});
+
+it('should return timing', async ({ context }) => {
+  // Create a fresh server to guarantee a new connection, because keep-alive
+  // sockets from other tests do not have dns/connect timings.
+  const httpServer = http.createServer((req, res) => res.end('Hello'));
+  const port = await new Promise<number>(resolve => httpServer.listen(0, () => resolve((httpServer.address() as any).port)));
+  try {
+    const response = await context.request.get(`http://localhost:${port}/`);
+    expect(response.ok()).toBeTruthy();
+    const timing = response.timing();
+    expect(timing.startTime).toBeCloseTo(Date.now(), -4);
+    expect(timing.domainLookupStart).toBe(0);
+    expect(timing.domainLookupEnd).toBeGreaterThanOrEqual(timing.domainLookupStart);
+    expect(timing.connectStart).toBe(timing.domainLookupEnd);
+    expect(timing.secureConnectionStart).toBe(-1);
+    expect(timing.connectEnd).toBeGreaterThanOrEqual(timing.connectStart);
+    expect(timing.requestStart).toBe(timing.connectEnd);
+    expect(timing.responseStart).toBeGreaterThanOrEqual(timing.requestStart);
+    expect(timing.responseEnd).toBeGreaterThanOrEqual(timing.responseStart);
+    expect(timing.responseEnd).toBeLessThan(60_000);
+  } finally {
+    await new Promise(resolve => httpServer.close(resolve));
+  }
+});
+
+it('should return timing for https', async ({ context }) => {
+  // Create a fresh server to guarantee a new connection, because keep-alive
+  // sockets from other tests do not have dns/connect timings.
+  const httpsServer = https.createServer(await TestServer.certOptions(), (req, res) => res.end('Hello'));
+  const port = await new Promise<number>(resolve => httpsServer.listen(0, () => resolve((httpsServer.address() as any).port)));
+  try {
+    const response = await context.request.get(`https://localhost:${port}/`, { ignoreHTTPSErrors: true });
+    expect(response.ok()).toBeTruthy();
+    const timing = response.timing();
+    expect(timing.startTime).toBeCloseTo(Date.now(), -4);
+    expect(timing.domainLookupStart).toBe(0);
+    expect(timing.domainLookupEnd).toBeGreaterThanOrEqual(timing.domainLookupStart);
+    expect(timing.connectStart).toBe(timing.domainLookupEnd);
+    expect(timing.secureConnectionStart).toBeGreaterThanOrEqual(timing.connectStart);
+    expect(timing.connectEnd).toBeGreaterThanOrEqual(timing.secureConnectionStart);
+    expect(timing.requestStart).toBe(timing.connectEnd);
+    expect(timing.responseStart).toBeGreaterThanOrEqual(timing.requestStart);
+    expect(timing.responseEnd).toBeGreaterThanOrEqual(timing.responseStart);
+  } finally {
+    await new Promise(resolve => httpsServer.close(resolve));
+  }
 });
 
 it('should throw on network error', async ({ context, server }) => {
@@ -311,6 +361,50 @@ it('should add cookies from Set-Cookie header', async ({ context, page, server }
   expect((await page.evaluate(() => document.cookie)).split(';').map(s => s.trim()).sort()).toEqual(['foo=bar', 'session=value']);
 });
 
+it('page.request.addCookies should add cookies to the browser context', async ({ context, page, server }) => {
+  await page.request.addCookies([
+    { name: 'a', value: 'b', url: server.EMPTY_PAGE },
+    { name: 'c', value: 'd', domain: 'localhost', path: '/', expires: Date.now() / 1000 + 3600 },
+  ]);
+  expect((await context.cookies()).map(c => ({ name: c.name, value: c.value })).sort((a, b) => a.name.localeCompare(b.name))).toEqual([
+    { name: 'a', value: 'b' },
+    { name: 'c', value: 'd' },
+  ]);
+  const [req] = await Promise.all([
+    server.waitForRequest('/empty.html'),
+    context.request.get(server.EMPTY_PAGE),
+  ]);
+  expect(req.headers.cookie.split(';').map(s => s.trim()).sort()).toEqual(['a=b', 'c=d']);
+  await page.goto(server.EMPTY_PAGE);
+  expect((await page.evaluate(() => document.cookie)).split(';').map(s => s.trim()).sort()).toEqual(['a=b', 'c=d']);
+});
+
+it('page.request.cookies should return browser context cookies', async ({ context, page, server }) => {
+  await context.addCookies([
+    { name: 'a', value: 'b', url: server.EMPTY_PAGE },
+    { name: 'c', value: 'd', domain: 'example.com', path: '/' },
+  ]);
+  expect((await page.request.cookies()).map(c => c.name).sort()).toEqual(['a', 'c']);
+  expect((await page.request.cookies(server.EMPTY_PAGE)).map(c => c.name)).toEqual(['a']);
+  expect(await page.request.cookies(server.EMPTY_PAGE)).toEqual(await context.cookies(server.EMPTY_PAGE));
+});
+
+it('page.request.clearCookies should clear browser context cookies', async ({ context, page, server }) => {
+  await context.addCookies([
+    { name: 'a', value: 'b', url: server.EMPTY_PAGE },
+    { name: 'c', value: 'd', url: server.EMPTY_PAGE },
+  ]);
+  await page.request.clearCookies({ name: 'a' });
+  expect((await context.cookies()).map(c => c.name)).toEqual(['c']);
+  await page.request.clearCookies();
+  expect(await context.cookies()).toEqual([]);
+  const [req] = await Promise.all([
+    server.waitForRequest('/empty.html'),
+    page.request.get(server.EMPTY_PAGE),
+  ]);
+  expect(req.headers.cookie).toBeUndefined();
+});
+
 it('should preserve cookie order from Set-Cookie header', async ({ context, page, server, browserName, isLinux }) => {
   it.info().annotations.push({ type: 'issue', description: 'https://github.com/microsoft/playwright/issues/23390' });
   server.setRoute('/setcookie.html', (req, res) => {
@@ -510,6 +604,21 @@ it('should return error with wrong credentials', async ({ context, server }) => 
   server.setAuth('/empty.html', 'user', 'pass');
   await context.setHTTPCredentials({ username: 'user', password: 'wrong' });
   const response2 = await context.request.get(server.EMPTY_PAGE);
+  expect(response2.status()).toBe(401);
+});
+
+it('should support multiple httpCredentials', async ({ contextFactory, server, browserName }) => {
+  server.setAuth('/empty.html', 'user1', 'pass1');
+  const context = await contextFactory({
+    httpCredentials: [
+      { username: 'user1', password: 'pass1', origin: server.PREFIX },
+      { username: 'user2', password: 'pass2', origin: server.CROSS_PROCESS_PREFIX },
+    ]
+  });
+  const response1 = await context.request.get(server.EMPTY_PAGE);
+  expect(response1.status()).toBe(200);
+  // Wrong credentials are picked for the other origin.
+  const response2 = await context.request.get(server.CROSS_PROCESS_PREFIX + '/empty.html');
   expect(response2.status()).toBe(401);
 });
 
@@ -1386,7 +1495,7 @@ it('should update host header on redirect', async ({ context, server }) => {
   });
   const reqPromise = server.waitForRequest('/test');
   const response = await context.request.get(server.PREFIX + '/redirect', {
-    headers: { host: new URL(server.PREFIX).host }
+    headers: { HosT: new URL(server.PREFIX).host }
   });
   expect(redirectCount).toBe(2);
   await expect(response).toBeOK();

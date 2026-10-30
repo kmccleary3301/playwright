@@ -338,6 +338,70 @@ test('should filter by project wildcard and exact name', async ({ runInlineTest 
   expect(new Set(result.outputLines)).toEqual(new Set(['first', 'fooBar', 'prefix']));
 });
 
+test('should not run non-default project by default', async ({ runInlineTest }) => {
+  const result = await runInlineTest({
+    'playwright.config.js': `
+      module.exports = {
+        projects: [
+          { name: 'default' },
+          { name: 'non-default', default: false },
+        ]
+      };
+    `,
+    'a.test.js': `
+      const { test } = require('@playwright/test');
+      test('one', async ({}) => {
+        console.log('%%' + test.info().project.name);
+      });
+    `
+  });
+  expect(result.exitCode).toBe(0);
+  expect(result.outputLines).toEqual(['default']);
+});
+
+test('should run non-default project when selected by name', async ({ runInlineTest }) => {
+  const result = await runInlineTest({
+    'playwright.config.js': `
+      module.exports = {
+        projects: [
+          { name: 'default' },
+          { name: 'non-default', default: false },
+        ]
+      };
+    `,
+    'a.test.js': `
+      const { test } = require('@playwright/test');
+      test('one', async ({}) => {
+        console.log('%%' + test.info().project.name);
+      });
+    `
+  }, { '--project': ['Non-Default'] });
+  expect(result.exitCode).toBe(0);
+  expect(result.outputLines).toEqual(['non-default']);
+});
+
+test('should match non-default project by wildcard', async ({ runInlineTest }) => {
+  const result = await runInlineTest({
+    'playwright.config.js': `
+      module.exports = {
+        projects: [
+          { name: 'foo-default' },
+          { name: 'foo-non-default', default: false },
+          { name: 'bar-non-default', default: false },
+        ]
+      };
+    `,
+    'a.test.js': `
+      const { test } = require('@playwright/test');
+      test('one', async ({}) => {
+        console.log('%%' + test.info().project.name);
+      });
+    `
+  }, { '--project': ['foo-*'] });
+  expect(result.exitCode).toBe(0);
+  expect(new Set(result.outputLines)).toEqual(new Set(['foo-default', 'foo-non-default']));
+});
+
 test('should print nice error when project is unknown', async ({ runInlineTest }) => {
   const { output, exitCode } = await runInlineTest({
     'playwright.config.ts': `
@@ -573,6 +637,18 @@ test('should throw when workers is negative via CLI (regression for #39938)', as
   expect(result.output).toContain('Workers must be a positive number');
 });
 
+test('should throw when workers is an invalid percentage via CLI (regression for #41679)', async ({ runInlineTest }) => {
+  const result = await runInlineTest({
+    'playwright.config.ts': `module.exports = {};`,
+    'a.test.ts': `
+      import { test, expect } from '@playwright/test';
+      test('fails', () => { expect(1).toBe(2); });
+    `,
+  }, { workers: 'abc%' });
+  expect(result.exitCode).toBe(1);
+  expect(result.output).toContain('Workers abc% must be a number or percentage.');
+});
+
 test('should work with undefined values and base', async ({ runInlineTest }) => {
   const result = await runInlineTest({
     'playwright.config.ts': `
@@ -583,7 +659,7 @@ test('should work with undefined values and base', async ({ runInlineTest }) => 
     'a.test.ts': `
       import { test, expect } from '@playwright/test';
       test('pass', async ({}, testInfo) => {
-        expect(testInfo.config.updateSnapshots).toBe('missing');
+        expect(testInfo.config.updateSnapshots).toBe('default');
       });
     `
   });
@@ -722,44 +798,6 @@ test('should merge projects in the config', async ({ runInlineTest }) => {
     `,
     'a.test.ts': `
       import { test } from '@playwright/test';
-      test('pass', async ({}) => {});
-    `
-  });
-  expect(result.exitCode).toBe(0);
-});
-
-test('should merge ct configs', async ({ runInlineTest }) => {
-  const result = await runInlineTest({
-    'playwright.config.ts': `
-      import { defineConfig, expect } from '@playwright/experimental-ct-react';
-      const baseConfig = defineConfig({
-        timeout: 10,
-        use: {
-          foo: 1,
-        },
-      });
-      const derivedConfig = defineConfig(baseConfig, {
-        grep: 'hi',
-        use: {
-          bar: 2,
-        },
-      });
-
-      // Make sure ct-specific properties are preserved
-      // and config properties are merged.
-      expect(derivedConfig).toEqual(expect.objectContaining({
-        use: { foo: 1, bar: 2 },
-        grep: 'hi',
-        '@playwright/test': expect.objectContaining({
-          babelPlugins: [[expect.stringContaining('tsxTransform.js')]]
-        }),
-        '@playwright/experimental-ct-core': expect.objectContaining({
-          registerSourceFile: expect.stringContaining('registerSource'),
-        }),
-      }));
-    `,
-    'a.test.ts': `
-      import { test } from '@playwright/experimental-ct-react';
       test('pass', async ({}) => {});
     `
   });

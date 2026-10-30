@@ -6,6 +6,210 @@ toc_max_heading_level: 2
 
 import LiteYouTube from '@site/src/components/LiteYouTube';
 
+## Version 1.64
+
+### 🧰 WebMCP
+
+New [`property: Page.webmcp`] and [`property: Frame.webmcp`] give access to the tools that a page registers through
+the experimental [WebMCP](https://webmachinelearning.github.io/webmcp/) browser API, so you can test them like
+any other part of your app:
+
+```python
+browser = chromium.launch(args=["--enable-features=WebMCP"])
+page = browser.new_page()
+page.goto("https://example.com")
+
+for tool in page.webmcp.tools():
+    print(tool["name"], tool["description"])
+
+result = page.webmcp.call_tool("add", {"a": 2, "b": 40})
+print(result["content"][0]["text"])  # "42"
+```
+
+[Playwright MCP](./getting-started-mcp.md) also supports WebMCP by default, with page-defined tools offered to the agent as `webmcp_<tool>`. Pass `--no-webmcp` to opt out.
+
+[`playwright-cli`](./getting-started-cli.md) exposes them as well:
+
+```bash
+playwright-cli webmcp-list
+playwright-cli webmcp-call search_catalog --params '{"query":"cats"}'
+```
+
+### 🎬 Better videos
+
+Videos can now be recorded at a custom frame rate, and the decorations for actions are styled with plain CSS:
+
+```python
+page.screencast.start(path="video.webm", size={"width": 1920, "height": 1080}, fps=60)
+page.screencast.show_actions(
+    style={
+        "point": "width: 20px; height: 20px; border-radius: 50%; background: red",
+        "highlight": "outline: 2px solid #333; background: rgba(0, 128, 255, .15)",
+        "title": "font-size: 16px",
+    }
+)
+```
+
+- New [`option: Browser.newContext.recordVideoFps`] option and new [`option: Screencast.start.fps`] option in
+  [`method: Screencast.start`]. Firefox and WebKit currently capture up to 25 frames per second.
+- New [`option: Screencast.showActions.style`] option takes CSS declarations for the `point` marker, the target
+  `highlight` and the action `title`. It replaces the `font_size` option, which is now deprecated.
+- The cursor stays visible at the last action point, survives navigations and travels along a natural, eased path.
+- Videos are encoded with VP9 instead of VP8, which takes less CPU and produces smaller files of the same or better
+  quality.
+- All video options are also available in [Playwright MCP](./getting-started-mcp.md) and [`playwright-cli`](./getting-started-cli.md).
+
+### 🪆 Locator.within()
+
+New [`method: Locator.within`] combines two locators that you already have, reading in the natural order —
+"this button, within that dialog":
+
+```python
+save_button = page.get_by_role("button", name="Save")
+dialog = page.get_by_test_id("settings-dialog")
+
+save_button.within(dialog).click()
+```
+
+Relative locators such as [`method: Locator.nth`] or [`method: Locator.first`] are resolved inside each parent
+separately, which makes column-like queries straightforward:
+
+```python
+# The third cell of every row, not the third cell in the table.
+third_column = page.get_by_role("cell").nth(2).within(page.get_by_role("row"))
+expect(third_column).to_have_text(["Apple", "Banana", "Cherry"])
+```
+
+### New APIs
+
+- New [`method: Page.getByRef`] locates an element by its aria ref, such as `e2`, reported by [`method: Page.ariaSnapshot`] in the `"ai"` mode.
+- New option [`option: Page.content.includeShadow`] in [`method: Page.content`] and [`method: Frame.content`] serializes open shadow roots as [declarative shadow DOM](https://developer.mozilla.org/en-US/docs/Web/API/Web_components/Using_shadow_DOM#declaratively_with_html).
+- New option [`option: Credentials.create.signCount`] sets the initial signature counter of a virtual credential. [`method: Credentials.create`] and [`method: Credentials.get`] return the current `sign_count`, and it is saved and restored together with the credentials in the storage state.
+- New [`method: APIRequestContext.addCookies`], [`method: APIRequestContext.cookies`] and [`method: APIRequestContext.clearCookies`] manage cookies of a request context, mirroring the [BrowserContext] methods:
+
+  ```python
+  request.add_cookies(
+      [{"name": "session-id", "value": "42", "url": "https://example.com"}]
+  )
+  print(request.cookies("https://example.com"))
+  request.clear_cookies(name="session-id")
+  ```
+
+### Breaking Changes ⚠️
+
+- Elements inside hidden iframes are considered hidden. Elements inside an iframe that is not visible, for example with `visibility: hidden`, are now considered hidden by actions, [`method: Locator.isVisible`] and [`method: LocatorAssertions.toBeVisible`].
+
+### Browser Versions
+
+- Chromium 156.0.8078.4
+- Mozilla Firefox 157.0
+- WebKit 27.2
+
+This version was also tested against the following stable channels:
+
+- Google Chrome 155
+- Microsoft Edge 155
+
+
+## Version 1.63
+
+### 🪟 Locate across frames
+
+[`method: Page.frameLocator`] and [`method: Frame.frameLocator`] called without a selector search in any frame of the
+subtree, so you no longer need to locate the iframe first:
+
+```python
+# Finds the button in any frame on the page.
+page.frame_locator().get_by_role("button").click()
+```
+
+The rest of the locator resolves inside a single frame, just like a regular locator, and an error is thrown when it
+matches elements in several frames.
+
+### 👁️ Visible-only locators
+
+New [`method: Locator.visible`] returns a locator that matches only visible elements. It is the recommended
+replacement for the `:visible` CSS pseudo-class:
+
+```python
+page.locator("button").visible.click()
+```
+
+### 🖼️ Aria and screen snapshots in traces
+
+New [`option: Tracing.start.ariaSnapshots`] and [`option: Tracing.start.screenSnapshots`] options of
+[`method: Tracing.start`] capture an aria snapshot and a screenshot of the page on every action:
+
+```python
+context.tracing.start(snapshots=True, aria_snapshots=True, screen_snapshots=True)
+```
+
+With aria and screen snapshots recorded, the new **Display Aria** mode in the trace viewer shows the action screenshot
+side by side with the aria snapshot, and hovering an aria node highlights it on the screenshot.
+
+### New APIs
+
+#### Browser and Context
+
+- [`option: Browser.newContext.httpCredentials`] now also accepts an array of credentials. The first entry matching the request origin is used, and entries without an origin match any request.
+- New option [`option: BrowserContext.storageState.opfs`] includes the [origin private file system](https://developer.mozilla.org/en-US/docs/Web/API/File_System_API/Origin_private_file_system) in the storage state, so it can be persisted and restored into later contexts.
+- New events [`event: Page.dialogClosed`] and [`event: BrowserContext.dialogClosed`] are emitted when a JavaScript dialog is accepted, dismissed or closed by the user.
+
+#### Command line
+
+- `playwright install --no-remove` keeps the browsers of other Playwright installations instead of removing them.
+- `playwright codegen --http-credentials` records against pages behind HTTP authentication.
+
+### Announcements
+
+* ⚠️ Ubuntu 20.04 is not supported anymore.
+* 🐧 On Linux arm64, Playwright now downloads the [Chrome for Testing](https://developer.chrome.com/blog/chrome-for-testing) build of Chromium, the same build used on all other platforms.
+
+### Browser Versions
+
+- Chromium 153.0.8010.12
+- Mozilla Firefox 155.0
+- WebKit 26.6
+
+This version was also tested against the following stable channels:
+
+- Google Chrome 153
+- Microsoft Edge 153
+
+
+## Version 1.62
+
+### 🖼️ WebP screenshots
+
+[`method: Page.screenshot`] and [`method: Locator.screenshot`] can now capture screenshots in the WebP format — Playwright infers the format from a `.webp` file extension, or you can set the `type` explicitly. Quality `100` (the default) is lossless, while lower values use lossy compression:
+
+```python
+page.screenshot(path="homepage.webp", quality=50)
+```
+
+### New APIs
+
+- New `scroll` option (`"auto"` | `"none"`) on actions to opt out of Playwright's automatic scroll-into-view.
+- New [`method: Locator.waitForFunction`] waits until a function — called with the matching element — returns a truthy value.
+- New [`method: APIResponse.timing`] returns resource timing information for an API response.
+
+### Announcements
+
+* 📋 The clipboard is now isolated from the operating system in headless mode, so tests that use `navigator.clipboard` no longer read or overwrite the clipboard of the machine running them.
+* ⚠️ Debian 11 is not supported anymore.
+
+### Browser Versions
+
+- Chromium 151.0.7922.34
+- Mozilla Firefox 153.0
+- WebKit 26.5
+
+This version was also tested against the following stable channels:
+
+- Google Chrome 151
+- Microsoft Edge 151
+
+
 ## Version 1.61
 
 ### 🔑 WebAuthn passkeys

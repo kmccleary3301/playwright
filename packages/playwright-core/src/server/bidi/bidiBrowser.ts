@@ -23,6 +23,7 @@ import { bidiBytesValueToString } from './bidiNetworkManager';
 import { BidiPage, kPlaywrightBindingChannel } from './bidiPage';
 import { PageBinding } from '../page';
 import * as bidi from './third_party/bidiProtocol';
+import * as rawBidiInsertTextSource from '../../generated/bidiInsertTextSource';
 
 import type { RegisteredListener } from '@utils/eventsHelper';
 import type { BrowserOptions } from '../browser';
@@ -30,6 +31,7 @@ import type { SdkObject } from '../instrumentation';
 import type { InitScript, Page } from '../page';
 import type { ConnectionTransport } from '../transport';
 import type * as types from '../types';
+import type { HttpCredentials } from '@protocol/structs';
 import type { BidiSession } from './bidiConnection';
 import type * as channels from '../channels';
 
@@ -226,6 +228,7 @@ export class BidiBrowserContext extends BrowserContext {
     const promises: Promise<any>[] = [
       super.initialize(),
     ];
+    promises.push(this.extendInjectedScript(rawBidiInsertTextSource.source));
     const downloadBehavior: bidi.Browser.DownloadBehavior = this._options.acceptDownloads === 'accept' ?
       { type: 'allowed', destinationFolder: this._browser.options.downloadsPath } :
       { type: 'denied' };
@@ -328,8 +331,11 @@ export class BidiBrowserContext extends BrowserContext {
   async doGrantPermissions(origin: string, permissions: string[]) {
     if (origin === 'null')
       return;
+    const protocolPermissions = permissions.flatMap(
+        permission => permission === 'local-network-access' ? ['local-network', 'loopback-network'] : permission
+    );
     const currentPermissions = this._originToPermissions.get(origin) || [];
-    const toGrant = permissions.filter(permission => !currentPermissions.includes(permission));
+    const toGrant = protocolPermissions.filter(permission => !currentPermissions.includes(permission));
     this._originToPermissions.set(origin, [...currentPermissions, ...toGrant]);
     if (origin === '*') {
       await Promise.all(this._bidiPages().flatMap(page =>
@@ -407,7 +413,7 @@ export class BidiBrowserContext extends BrowserContext {
     });
   }
 
-  async doSetHTTPCredentials(httpCredentials?: types.Credentials): Promise<void> {
+  async doSetHTTPCredentials(httpCredentials?: HttpCredentials[]): Promise<void> {
     this._options.httpCredentials = httpCredentials;
     for (const page of this.pages())
       await (page.delegate as BidiPage).updateHttpCredentials();
@@ -509,8 +515,6 @@ export class BidiBrowserContext extends BrowserContext {
     }));
     await Promise.all(promises);
   }
-
-  onClosePersistent() {}
 
   override async clearCache(): Promise<void> {
   }

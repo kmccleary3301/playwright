@@ -305,6 +305,24 @@ it('setContent should work after disabling javascript', async ({ contextFactory 
   await expect(page.locator('h1')).toHaveText('Hello');
 });
 
+it('should retry click after disabling javascript', async ({ contextFactory }) => {
+  it.info().annotations.push({ type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42977' });
+  const context = await contextFactory({ javaScriptEnabled: false });
+  const page = await context.newPage();
+  await page.setContent(`
+    <details><summary>Continue</summary>Details</details>
+    <div id="cover" style="position: fixed; inset: 0;"></div>
+  `);
+  let clicked = false;
+  const clickPromise = page.locator('summary').click().then(() => clicked = true);
+  // Give it enough time to go through a few retries while the button is covered.
+  await page.waitForTimeout(2000);
+  expect(clicked).toBe(false);
+  await page.locator('#cover').evaluate(e => e.remove());
+  await clickPromise;
+  await expect(page.locator('details')).toHaveAttribute('open', '');
+});
+
 it('should work with offline option', async ({ browser, server, browserName }) => {
   const context = await browser.newContext({ offline: true });
   const page = await context.newPage();
@@ -366,6 +384,38 @@ it('should emulate navigator.onLine', async ({ browser, server }) => {
   await context.close();
 });
 
+it('should emulate navigator.onLine across navigations', {
+  annotation: [
+    { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42174' },
+    { type: 'issue', description: 'https://issues.chromium.org/issues/544795254' },
+  ],
+}, async ({ browser, server, browserName, browserMajorVersion }) => {
+  it.skip(browserName === 'chromium' && browserMajorVersion < 155, 'does not survive cross-process navgiation');
+
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.goto(server.EMPTY_PAGE);
+  expect(await page.evaluate(() => window.navigator.onLine)).toBe(true);
+  await context.setOffline(true);
+  expect(await page.evaluate(() => window.navigator.onLine)).toBe(false);
+
+  await page.goto('about:blank');
+  expect(await page.evaluate(() => window.navigator.onLine)).toBe(false);
+  await page.goto('data:text/html,<title>offline</title>');
+  expect(await page.evaluate(() => window.navigator.onLine)).toBe(false);
+
+  if (browserName === 'chromium') {
+    // Try a cross-process navigation in Chromium, which allows routing while offline.
+    await page.route('**/*', route => route.fulfill({ contentType: 'text/html', body: '<html></html>' }));
+    await page.goto(server.CROSS_PROCESS_PREFIX + '/empty.html');
+    expect(await page.evaluate(() => window.navigator.onLine)).toBe(false);
+  }
+
+  await context.setOffline(false);
+  expect(await page.evaluate(() => window.navigator.onLine)).toBe(true);
+  await context.close();
+});
+
 it('should emulate offline event', { annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/37295' } }, async ({ browser }) => {
   const context = await browser.newContext();
   const page = await context.newPage();
@@ -376,9 +426,9 @@ it('should emulate offline event', { annotation: { type: 'issue', description: '
     return events;
   });
   await context.setOffline(true);
-  expect(await events.jsonValue()).toEqual(['offline']);
+  await expect.poll(() => events.jsonValue()).toEqual(['offline']);
   await context.setOffline(false);
-  expect(await events.jsonValue()).toEqual(['offline', 'online']);
+  await expect.poll(() => events.jsonValue()).toEqual(['offline', 'online']);
   await context.close();
 });
 

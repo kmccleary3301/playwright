@@ -59,6 +59,19 @@ test('cdp server reuse tab', async ({ cdpServer, startClient, server }) => {
   });
 });
 
+test('cdp connection uses noDefaults', async ({ cdpServer, startClient }) => {
+  test.info().annotations.push({ type: 'issue', description: 'https://github.com/microsoft/playwright/issues/41661' });
+  const browserContext = await cdpServer.start();
+  const [page] = browserContext.pages();
+  await page.emulateMedia({ media: 'print' });
+  expect(await page.evaluate(() => matchMedia('print').matches)).toBe(true);
+
+  const { client } = await startClient({ args: [`--cdp-endpoint=${cdpServer.endpoint}`] });
+  await client.callTool({ name: 'browser_snapshot' });
+
+  expect(await page.evaluate(() => matchMedia('print').matches)).toBe(true);
+});
+
 test('should throw connection error and allow re-connecting', async ({ cdpServer, startClient, server }) => {
   const { client } = await startClient({ args: [`--cdp-endpoint=${cdpServer.endpoint}`] });
 
@@ -109,6 +122,33 @@ test('auto-recover when remote browser disconnects mid-session', async ({ cdpSer
   // Bring the CDP endpoint back. The next call should reconnect transparently —
   // no manual browser_close needed (regression test for playwright-mcp#1588).
   await cdpServer.start();
+  expect(await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.HELLO_WORLD },
+  })).toHaveResponse({
+    snapshot: expect.stringContaining(`Hello, world!`),
+  });
+});
+
+test('transparently reconnects when the remote browser is restarted', async ({ cdpServer, startClient, server }) => {
+  const browserContext = await cdpServer.start();
+  const { client, stderr } = await startClient({
+    args: [`--cdp-endpoint=${cdpServer.endpoint}`],
+    env: { DEBUG: 'pw:mcp:backend' },
+  });
+
+  expect(await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.HELLO_WORLD },
+  })).toHaveResponse({
+    snapshot: expect.stringContaining(`Hello, world!`),
+  });
+
+  await browserContext.close();
+  await expect.poll(() => stderr()).toContain('browser disconnected');
+  await cdpServer.start();
+
+  // The very next tool call must reconnect, with no failed call in between.
   expect(await client.callTool({
     name: 'browser_navigate',
     arguments: { url: server.HELLO_WORLD },

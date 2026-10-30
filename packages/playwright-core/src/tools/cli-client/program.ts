@@ -14,8 +14,6 @@
  * limitations under the License.
  */
 
-/* eslint-disable no-restricted-properties */
-
 import { execSync, spawn } from 'child_process';
 
 import crypto from 'crypto';
@@ -29,6 +27,7 @@ import { Session } from './session';
 import { libPath } from '../../package';
 import { serverRegistry } from '../../serverRegistry';
 import { minimist } from './minimist';
+import { processExit } from '../../bootstrap';
 
 import type { ListData, ListedBrowser, Output } from './output';
 import type { ClientInfo, SessionFile } from './registry';
@@ -52,7 +51,9 @@ type AttachOptions = {
 type OpenOptions = {
   browser?: string;
   config?: string;
+  device?: string;
   headed?: boolean;
+  mobile?: boolean;
   persistent?: boolean;
   profile?: string;
 };
@@ -63,8 +64,9 @@ const globalOptions: (keyof (GlobalOptions & OpenOptions & AttachOptions))[] = [
   'session',
 ];
 
-const booleanOptions: (keyof (GlobalOptions & OpenOptions & AttachOptions & { all?: boolean }))[] = [
+const booleanOptions: (keyof (GlobalOptions & OpenOptions & AttachOptions & { all?: boolean, g?: boolean }))[] = [
   'all',
+  'g',
   'help',
   'json',
   'raw',
@@ -83,13 +85,19 @@ export async function program(options?: { embedderVersion?: string}) {
     args.session = args.s;
     delete args.s;
   }
+  // Normalize -g alias to --global
+  if (args.g) {
+    args.global = true;
+    delete args.g;
+  }
 
   const output: Output = args.json ? new JsonOutput() : new TextOutput();
   const commandName = args._?.[0];
 
   if (args.version || args.v) {
     output.version(options?.embedderVersion ?? clientInfo.version);
-    process.exit(0);
+    // eslint-disable-next-line no-restricted-syntax
+    processExit(0);
   }
 
   const command = commandName && help.commands[commandName];
@@ -99,11 +107,12 @@ export async function program(options?: { embedderVersion?: string}) {
     } else {
       const lines = ['playwright-cli - run playwright mcp commands from terminal'];
       if (process.env.CLAUDECODE || process.env.COPILOT_CLI)
-        lines.push(`Agent skill: ${path.relative(process.cwd(), libPath('tools', 'cli-client', 'skill', 'SKILL.md'))}`);
+        lines.push(`Agent skill: ${path.relative(process.cwd(), libPath('tools', 'skills', 'playwright-cli', 'SKILL.md'))}`);
       lines.push(help.global);
       output.help(lines.join('\n\n'));
     }
-    process.exit(0);
+    // eslint-disable-next-line no-restricted-syntax
+    processExit(0);
   }
 
   if (!command)
@@ -194,6 +203,8 @@ export async function program(options?: { embedderVersion?: string}) {
       return;
     }
     case 'install':
+      if (args.global && !args.skills)
+        output.errorInstallGlobalRequiresSkills();
       await runInitWorkspace(args, output);
       output.installed();
       return;
@@ -238,6 +249,7 @@ export async function program(options?: { embedderVersion?: string}) {
       const child = spawn(process.execPath, daemonArgs, {
         detached: !foreground,
         stdio: foreground ? 'inherit' : ['pipe', 'pipe', 'ignore'],
+        windowsHide: true,
       });
       if (foreground) {
         await new Promise<void>(resolve => child.on('exit', () => resolve()));
@@ -293,6 +305,8 @@ async function runInSession(entry: SessionFile, clientInfo: ClientInfo, args: Mi
     delete args[globalOption];
   const session = new Session(entry);
   const result = await session.run(clientInfo, args, { raw, json: output.json });
+  if (result.isError)
+    process.exitCode = 1;
   return result.text;
 }
 
@@ -311,7 +325,11 @@ async function runInSessionOrStop(entry: SessionFile, clientInfo: ClientInfo, ar
 
 async function runInitWorkspace(args: MinimistArgs, output: Output) {
   const cliPath = libPath('entry', 'cliDaemon.js');
-  const daemonArgs: string[] = [cliPath, '--init-workspace', ...(args.skills ? ['--init-skills', String(args.skills)] : [])];
+  const daemonArgs: string[] = [
+    cliPath,
+    '--init-workspace',
+    ...(args.skills ? [args.global ? '--init-skills-global' : '--init-skills', String(args.skills)] : []),
+  ];
   await new Promise<void>((resolve, reject) => {
     const child = spawn(process.execPath, daemonArgs, {
       stdio: output.installStdio(),
@@ -436,16 +454,20 @@ function validateFlags(args: MinimistArgs, command: { flags: Record<string, 'boo
       continue;
     if ((globalOptions as readonly string[]).includes(key))
       continue;
-    if (!(key in command.flags))
-      unknownFlags.push(key);
+    if (key in command.flags)
+      continue;
+    // Negated flags like '--no-shell' are parsed as { shell: false }.
+    if (args[key] === false && `no-${key}` in command.flags)
+      continue;
+    unknownFlags.push(key);
   }
   if (unknownFlags.length)
     output.errorUnknownOption(unknownFlags, command.help);
 }
 
-function validateArgs(args: MinimistArgs, command: { args: string[], help: string }, output: Output) {
+function validateArgs(args: MinimistArgs, command: { args: string[], variadicArg?: boolean, help: string }, output: Output) {
   const positional = args._.slice(1);
-  if (positional.length > command.args.length)
+  if (positional.length > command.args.length && !command.variadicArg)
     output.errorTooManyArguments(command.args.length, positional.length, command.help);
 }
 

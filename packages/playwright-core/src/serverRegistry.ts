@@ -23,6 +23,7 @@ import chokidar from 'chokidar';
 
 import { packageJSON, packageRoot } from './package';
 
+import type { FSWatcher } from 'chokidar';
 // Only client depenencies with backward compatibility guarantees should be imported here.
 import type { LaunchOptions } from '../types/types';
 
@@ -58,7 +59,7 @@ export interface ServerRegistryEvents {
 
 class ServerRegistry extends EventEmitter {
   private _descriptors = new Map<string, BrowserDescriptor>();
-  private _watcher: chokidar.FSWatcher | undefined;
+  private _watcher: FSWatcher | undefined;
   private _watcherRefs = 0;
   private _ready: Promise<void> | undefined;
 
@@ -171,7 +172,7 @@ class ServerRegistry extends EventEmitter {
   }
 
   private _browsersDir() {
-    return process.env.PWTEST_SERVER_REGISTRY || registryDirectory;
+    return process.env.PWTEST_SERVER_REGISTRY || registryDirectory();
   }
 
   private _startWatcher() {
@@ -242,7 +243,7 @@ async function canConnectTo(descriptor: BrowserDescriptor): Promise<boolean> {
   });
 }
 
-const defaultCacheDirectory = (() => {
+function computeDefaultCacheDirectory(): string {
   if (process.platform === 'linux')
     return process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache');
   if (process.platform === 'darwin')
@@ -250,8 +251,16 @@ const defaultCacheDirectory = (() => {
   if (process.platform === 'win32')
     return process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
   throw new Error('Unsupported platform: ' + process.platform);
-})();
+}
 
-const registryDirectory = path.join(defaultCacheDirectory, 'ms-playwright', 'b');
+let _defaultCacheDirectory: string | undefined;
+
+function defaultCacheDirectory(): string {
+  return _defaultCacheDirectory ??= computeDefaultCacheDirectory();
+}
+
+function registryDirectory(): string {
+  return path.join(defaultCacheDirectory(), 'ms-playwright', 'b');
+}
 
 export const serverRegistry = new ServerRegistry();

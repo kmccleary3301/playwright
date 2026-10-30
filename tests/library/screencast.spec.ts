@@ -54,6 +54,54 @@ test('screencast.start delivers frames via onFrame callback', async ({ browser, 
   await context.close();
 });
 
+test('applies backpressure while async onFrame callback is pending', async ({ browser, server, trace }) => {
+  test.skip(trace === 'on', 'trace recording acknowledges screencast frames independently');
+
+  const context = await browser.newContext({ viewport: { width: 500, height: 400 } });
+  const page = await context.newPage();
+
+  let releaseCallback: () => void;
+  const callbackDone = new Promise<void>(f => releaseCallback = f);
+  let firstFrame: () => void;
+  const firstFrameReceived = new Promise<void>(f => firstFrame = f);
+  let frameCount = 0;
+  let lastFrameTimestamp = 0;
+  await page.screencast.start({
+    onFrame: async () => {
+      ++frameCount;
+      lastFrameTimestamp = Date.now();
+      firstFrame();
+      await callbackDone;
+    },
+  });
+  await page.goto(server.EMPTY_PAGE);
+  await page.evaluate(() => {
+    const animate = () => {
+      document.body.style.backgroundColor = document.body.style.backgroundColor === 'red' ? 'blue' : 'red';
+      requestAnimationFrame(animate);
+    };
+    requestAnimationFrame(animate);
+  });
+  await firstFrameReceived;
+  await expect.poll(() => Date.now() - lastFrameTimestamp, { timeout: 30000 }).toBeGreaterThan(1000);
+
+  const framesWhileBlocked = frameCount;
+  await ensureSomeFrames(page);
+  expect(frameCount).toBe(framesWhileBlocked);
+
+  releaseCallback!();
+  await expect.poll(async () => {
+    await page.evaluate(() => {
+      document.body.style.backgroundColor = document.body.style.backgroundColor === 'red' ? 'blue' : 'red';
+    });
+    await ensureSomeFrames(page);
+    return frameCount;
+  }, { timeout: 30000 }).toBeGreaterThan(framesWhileBlocked);
+
+  await page.screencast.stop();
+  await context.close();
+});
+
 test('onFrame receives viewport size', async ({ browser, server, trace, browserName, isMac, headless }) => {
   test.skip(trace === 'on', 'trace=on has different screencast image configuration');
   test.fixme(browserName === 'firefox' && isMac && !headless, 'wrong frame size in headed Firefox on Mac');
@@ -155,6 +203,7 @@ test('start/stop twice without path creates two files in artifactsDir', async ({
 
 test('start should work when recordVideo is set', async ({ browser }, testInfo) => {
   test.slow();
+
   const autoDir = testInfo.outputPath('auto');
   const manualDir = testInfo.outputPath('manual');
   const context = await browser.newContext({
@@ -174,6 +223,22 @@ test('start should work when recordVideo is set', async ({ browser }, testInfo) 
   await context.close();
   const videoFiles2 = fs.readdirSync(autoDir).filter(f => f.endsWith('.webm'));
   expect(videoFiles2).toHaveLength(1);
+});
+
+test('start should record video with the requested fps', async ({ browser }, testInfo) => {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  const videoPath = testInfo.outputPath('video.webm');
+  await page.screencast.start({ path: videoPath, fps: 60 });
+  await ensureSomeFrames(page);
+  await page.screencast.stop();
+  expect(new VideoPlayer(videoPath).fps).toBe(60);
+  await context.close();
+});
+
+test('start should throw on invalid fps', async ({ page }, testInfo) => {
+  const error = await page.screencast.start({ path: testInfo.outputPath('video.webm'), fps: -1 }).catch(e => e);
+  expect(error.message).toContain('"fps" must be a positive number, got -1');
 });
 
 test('start should fail when another recording is in progress', async ({ page, trace }, testInfo) => {
@@ -205,7 +270,6 @@ test('start should finish when page is closed', async ({ browser }, testInfo) =>
 });
 
 test('empty video', async ({ browser }, testInfo) => {
-  test.slow();
   const size = { width: 800, height: 800 };
   const context = await browser.newContext({ viewport: size });
   const page = await context.newPage();

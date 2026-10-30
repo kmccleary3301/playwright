@@ -136,7 +136,7 @@ export namespace Protocol {
         username: string;
         password: string;
         origin?: string;
-      }|null;
+      }[]|null;
     };
     export type setHTTPCredentialsReturnValue = void;
     export type setRequestInterceptionParameters = {
@@ -958,6 +958,7 @@ export namespace Protocol {
     }
     export type setRequestInterceptionParameters = {
       enabled: boolean;
+      bypassServiceWorker?: boolean;
     };
     export type setRequestInterceptionReturnValue = void;
     export type setExtraHTTPHeadersParameters = {

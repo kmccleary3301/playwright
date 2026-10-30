@@ -23,6 +23,7 @@ import { ChannelOwner } from './channelOwner';
 import { isTargetClosedError } from './errors';
 import { Events } from './events';
 import { mkdirIfNeeded } from './fileUtils';
+import { kNoTimeout } from './timeoutSettings';
 
 import type { BrowserType } from './browserType';
 import type { Page } from './page';
@@ -75,14 +76,14 @@ export class Browser extends ChannelOwner<channels.BrowserChannel> implements ap
     for (const page of context.pages())
       page._onClose();
     context._onClose();
-    await this._channel.disconnectFromReusedContext({ reason });
+    await this._channel.disconnectFromReusedContext({ reason }, kNoTimeout);
   }
 
   async _innerNewContext(userOptions: BrowserContextOptions = {}, forReuse: boolean): Promise<BrowserContext> {
     const options = this._browserType._playwright.selectors._withSelectorOptions(userOptions);
     await this._instrumentation.runBeforeCreateBrowserContext(options);
     const contextOptions = await prepareBrowserContextParams(options);
-    const response = forReuse ? await this._channel.newContextForReuse(contextOptions) : await this._channel.newContext(contextOptions);
+    const response = forReuse ? await this._channel.newContextForReuse(contextOptions, kNoTimeout) : await this._channel.newContext(contextOptions, kNoTimeout);
     const context = BrowserContext.from(response.context);
     if (forReuse)
       context._forReuse = true;
@@ -117,6 +118,7 @@ export class Browser extends ChannelOwner<channels.BrowserChannel> implements ap
   private _setupBrowserContext(context: BrowserContext) {
     context._logger = this._logger;
     context.tracing._tracesDir = this._options.tracesDir;
+    context.request.tracing._tracesDir = this._options.tracesDir;
     this._browserType._contexts.add(context);
     this._browserType._playwright.selectors._contextsForSelectors.add(context);
     context.setDefaultTimeout(this._browserType._playwright._defaultContextTimeout);
@@ -132,12 +134,12 @@ export class Browser extends ChannelOwner<channels.BrowserChannel> implements ap
   }
 
   async bind(title: string, options: { workspaceDir?: string, metadata?: Record<string, any>, host?: string, port?: number } = {}): Promise<{ endpoint: string }> {
-    const { endpoint } = await this._channel.startServer({ title, ...options });
+    const { endpoint } = await this._channel.startServer({ title, ...options }, kNoTimeout);
     return { endpoint };
   }
 
   async unbind(): Promise<void> {
-    await this._channel.stopServer();
+    await this._channel.stopServer({}, kNoTimeout);
   }
 
   async newPage(options: BrowserContextOptions = {}): Promise<Page> {
@@ -155,16 +157,16 @@ export class Browser extends ChannelOwner<channels.BrowserChannel> implements ap
   }
 
   async newBrowserCDPSession(): Promise<api.CDPSession> {
-    return CDPSession.from((await this._channel.newBrowserCDPSession()).session);
+    return CDPSession.from((await this._channel.newBrowserCDPSession({}, kNoTimeout)).session);
   }
 
   async startTracing(page?: Page, options: { path?: string; screenshots?: boolean; categories?: string[]; } = {}) {
     this._path = options.path;
-    await this._channel.startTracing({ ...options, page: page ? page._channel : undefined });
+    await this._channel.startTracing({ ...options, page: page ? page._channel : undefined }, kNoTimeout);
   }
 
   async stopTracing(): Promise<Buffer> {
-    const artifact = Artifact.from((await this._channel.stopTracing()).artifact);
+    const artifact = Artifact.from((await this._channel.stopTracing({}, kNoTimeout)).artifact);
     const buffer = await artifact.readIntoBuffer();
     await artifact.delete();
     if (this._path) {
@@ -185,7 +187,7 @@ export class Browser extends ChannelOwner<channels.BrowserChannel> implements ap
       if (this._shouldCloseConnectionOnClose)
         this._connection.close();
       else
-        await this._channel.close(options);
+        await this._channel.close(options, kNoTimeout);
       await this._closedPromise;
     } catch (e) {
       if (isTargetClosedError(e))

@@ -22,8 +22,9 @@ import { playwright } from '../../inprocess';
 import { defaultCacheDirectory } from '../../server/registry/index';
 import { testDebug } from './log';
 import { outputDir } from '../backend/context';
+import { IdleTimer, defaultIdleTimeout } from '../backend/idleTimer';
 import { createExtensionBrowser } from './extensionContextFactory';
-import { connectToBrowserAcrossVersions } from '../utils/connect';
+import { connectToBrowserAcrossVersions, descriptorEndpoint } from '../utils/connect';
 import { serverRegistry } from '../../serverRegistry';
 import { resolveExtensionOptions } from './config';
 // eslint-disable-next-line no-restricted-imports
@@ -36,39 +37,64 @@ import type { Playwright } from '../../client/playwright';
 import type * as playwrightTypes from '../../..';
 import type { BrowserInfo } from '../../serverRegistry';
 
-type BrowserWithInfo = {
+export type BrowserWithInfo = {
   browser: playwrightTypes.Browser,
   browserInfo: BrowserInfo,
-  canBind: boolean,
+  endpoint: string,
   ownership: 'attached' | 'own',
+  idleTimer?: IdleTimer,
 };
 
-export async function createBrowserWithInfo(config: FullConfig, clientInfo: ClientInfo, cliOptions: CLIOptions): Promise<BrowserWithInfo> {
+export type BindOptions = {
+  title: string,
+  workspaceDir?: string,
+};
+
+export async function createBrowserWithInfo(config: FullConfig, clientInfo: ClientInfo, cliOptions: CLIOptions, bindOptions: BindOptions): Promise<BrowserWithInfo> {
+  const info = await createBrowser(config, clientInfo, cliOptions, bindOptions);
+  info.idleTimer = createIdleTimer(config, info.ownership, () => info.browser.close().catch(() => {}));
+  info.browser.once('disconnected', () => info.idleTimer?.dispose());
+  return info;
+}
+
+export function createIdleTimer(config: FullConfig, ownership: BrowserWithInfo['ownership'], onIdle: () => void): IdleTimer | undefined {
+  const idleTimeout = config.timeouts?.idle ?? (ownership === 'own' && config.browser.launchOptions.headless ? defaultIdleTimeout : undefined);
+  return idleTimeout ? new IdleTimer(idleTimeout, onIdle) : undefined;
+}
+
+async function createBrowser(config: FullConfig, clientInfo: ClientInfo, cliOptions: CLIOptions, bindOptions: BindOptions): Promise<BrowserWithInfo> {
   if (config.browser.remoteEndpoint)
     return await createRemoteBrowser(config);
 
   let browser: playwrightTypes.Browser;
-  let canBind = false;
   let ownership: 'attached' | 'own' = 'own';
   if (config.browser.cdpEndpoint) {
     browser = await createCDPBrowser(config, clientInfo);
-    canBind = true;
     ownership = 'attached';
   } else if (config.browser.isolated) {
     browser = await createIsolatedBrowser(config, clientInfo);
-    canBind = true;
     ownership = 'own';
   } else if (config.extension) {
-    const { channel, executablePath } = resolveExtensionOptions(cliOptions);
-    browser = await createExtensionBrowser(channel, executablePath, clientInfo.clientName);
+    const { channel, executablePath, profileDirName } = resolveExtensionOptions(cliOptions);
+    browser = await createExtensionBrowser(channel, executablePath, config.browser.userDataDir, profileDirName, clientInfo.clientName);
     ownership = 'attached';
   } else {
     browser = await createPersistentBrowser(config, clientInfo);
-    canBind = true;
     ownership = 'own';
   }
 
-  return { browser, browserInfo: browserInfo(browser, config), canBind, ownership };
+  try {
+    const { endpoint } = await browser.bind(bindOptions.title, { workspaceDir: bindOptions.workspaceDir });
+    return { browser, browserInfo: browserInfo(browser, config), endpoint, ownership };
+  } catch (error) {
+    await browser.close().catch(() => {});
+    throw error;
+  }
+}
+
+export async function connectToBrowserEndpoint(config: FullConfig, browser: playwrightTypes.Browser, endpoint: string): Promise<playwrightTypes.Browser> {
+  const options = config.browser.remoteEndpoint ? remoteConnectOptions(config).options : {};
+  return await browser.browserType().connect(endpoint, options);
 }
 
 export interface BrowserContextFactory {
@@ -108,26 +134,31 @@ async function createCDPBrowser(config: FullConfig, clientInfo: ClientInfo): Pro
   const browser = await playwright.chromium.connectOverCDP(config.browser.cdpEndpoint!, {
     headers: config.browser.cdpHeaders,
     timeout: config.browser.cdpTimeout,
+    noDefaults: true,
     artifactsDir,
   });
   return browser;
 }
 
-async function createRemoteBrowser(config: FullConfig): Promise<BrowserWithInfo> {
-  testDebug('create browser (remote)');
-  // `remoteEndpoint` may be a plain URL string or a ConnectOptions object that
-  // carries additional fields such as `exposeNetwork`, `headers`, `slowMo`, and
-  // `timeout`. Normalize once so the rest of the function deals with a single
-  // shape.
+// `remoteEndpoint` may be a plain URL string or a ConnectOptions object that
+// carries additional fields such as `exposeNetwork`, `headers`, `slowMo`, and
+// `timeout`. Normalize once so every connect deals with a single shape.
+function remoteConnectOptions(config: FullConfig): { endpoint: string, options: playwrightTypes.ConnectOptions } {
   const remote = config.browser.remoteEndpoint!;
   // `remoteHeaders` is for back-compat, `remoteEndpoint.headers` takes precedence.
   // eslint-disable-next-line no-restricted-syntax
   const remoteHeaders = (config.browser as any).remoteHeaders as Record<string, string> | undefined;
-  const remoteOptions = typeof remote === 'string'
-    ? { endpoint: remote, headers: remoteHeaders }
-    : { ...remote, headers: { ...remoteHeaders, ...remote.headers } };
+  if (typeof remote === 'string')
+    return { endpoint: remote, options: { headers: remoteHeaders } };
+  const { endpoint, ...options } = remote;
+  return { endpoint, options: { ...options, headers: { ...remoteHeaders, ...remote.headers } } };
+}
 
-  const descriptor = await serverRegistry.find(remoteOptions.endpoint);
+async function createRemoteBrowser(config: FullConfig): Promise<BrowserWithInfo> {
+  testDebug('create browser (remote)');
+  const { endpoint, options } = remoteConnectOptions(config);
+
+  const descriptor = await serverRegistry.find(endpoint);
   if (descriptor) {
     const browser = await connectToBrowserAcrossVersions(descriptor);
     return {
@@ -138,20 +169,20 @@ async function createRemoteBrowser(config: FullConfig): Promise<BrowserWithInfo>
         launchOptions: descriptor.browser.launchOptions,
         userDataDir: descriptor.browser.userDataDir
       },
-      canBind: false,
+      endpoint: descriptorEndpoint(descriptor),
       ownership: 'attached'
     };
   }
 
   const playwrightObject = playwright as Playwright;
   // Use connectToBrowser instead of playwright[browserName].connect because we don't have browserName.
-  const browser = await connectToBrowser(playwrightObject, remoteOptions);
+  const browser = await connectToBrowser(playwrightObject, { endpoint, ...options });
   browser._connectToBrowserType(playwrightObject[browser._browserName], {}, undefined);
   // A browser started via `launchServer` exposes no contexts until one is
   // created, so create one when attaching to such a server.
   if (!browser.contexts().length)
     await browser.newContext(config.browser.contextOptions);
-  return { browser, browserInfo: browserInfo(browser, config), canBind: false, ownership: 'attached' };
+  return { browser, browserInfo: { ...browserInfo(browser, config), browserName: browser._browserName }, endpoint, ownership: 'attached' };
 }
 
 async function createPersistentBrowser(config: FullConfig, clientInfo: ClientInfo): Promise<playwrightTypes.Browser> {
@@ -194,7 +225,7 @@ async function createPersistentBrowser(config: FullConfig, clientInfo: ClientInf
 }
 
 async function createUserDataDir(config: FullConfig, clientInfo: ClientInfo) {
-  const dir = process.env.PWMCP_PROFILES_DIR_FOR_TEST ?? path.join(defaultCacheDirectory, 'ms-playwright-mcp');
+  const dir = process.env.PWMCP_PROFILES_DIR_FOR_TEST ?? path.join(defaultCacheDirectory(), 'ms-playwright-mcp');
   const browserToken = config.browser.launchOptions?.channel ?? config.browser?.browserName;
   // Hesitant putting hundreds of files into the user's workspace, so using it for hashing instead.
   const rootPathToken = createHash(clientInfo.cwd);
@@ -249,12 +280,15 @@ export function isProfileLocked(userDataDir: string): boolean {
 function throwIfExecutableMissing(error: Error, config: FullConfig): void {
   // The "Executable doesn't exist" prefix is shared by all managed binaries
   // (browser, ffmpeg, winldd). Disambiguate by the path so the user is told
-  // which dependency to install.
+  // which dependency to install, and surface the executable path itself so a
+  // version mismatch (an installed build vs. the expected build) is
+  // diagnosable rather than looking like a missing install.
   if (!error.message.includes(`Executable doesn't exist`))
     return;
   const target = error.message.includes('ffmpeg') ? 'ffmpeg' : (config.browser.launchOptions?.channel ?? config.browser.browserName);
   const label = target === 'ffmpeg' ? 'FFmpeg' : `Browser "${target}"`;
-  if (config.skillMode)
-    throw new Error(`${label} is not installed. Run \`playwright-cli install-browser ${target}\` to install`);
-  throw new Error(`${label} is not installed. Run \`npx @playwright/mcp install-browser ${target}\` to install`);
+  const command = config.skillMode ? `playwright-cli install-browser ${target}` : `npx @playwright/mcp install-browser ${target}`;
+  const match = error.message.match(/Executable doesn't exist at ([^\r\n]+)/);
+  const location = match ? `; expected executable at ${match[1].trim()}` : '';
+  throw new Error(`${label} is not installed${location}. Run \`${command}\` to install`);
 }

@@ -14,9 +14,7 @@
  * limitations under the License.
  */
 
-import path from 'path';
-
-import { parseStackFrame, captureRawStack } from '@isomorphic/stackTrace';
+import { parseStackFrame, captureRawStack } from '@utils/stackTrace';
 import { escapeWithQuotes, isString } from '@isomorphic/stringUtils';
 import { pollAgainstDeadline } from '@isomorphic/timeoutRunner';
 import { currentZone } from '@utils/zones';
@@ -88,7 +86,7 @@ import type { MatcherContext, MatchersObject, RawMatcherFn } from './expectLibra
 import type { MatcherAttachment, MatcherResult } from './matcherHint';
 import type { ExpectMatcherStateInternal } from './matchers';
 import type { Expect } from '../../types/test';
-import type { StackFrame } from '@isomorphic/stackTrace';
+import type { StackFrame } from '@utils/stackTrace';
 
 interface ExpectStep {
   complete(result: {
@@ -103,9 +101,8 @@ interface ExpectStep {
 export interface ExpectTestInfo {
   _addStep(data: {
     category: 'expect';
-    apiName: string;
     title: string;
-    shortTitle: string;
+    subtitle?: string;
     params?: Record<string, any>;
   }): ExpectStep;
   _deadline(): { deadline: number; timeout: number };
@@ -117,7 +114,7 @@ export type ExpectConfig = {
   testInfo: ExpectTestInfo | null;
   filteredStackTrace: (rawStack: string[]) => StackFrame[];
   ignoreSnapshots: boolean;
-  updateSnapshots: 'all' | 'changed' | 'missing' | 'none';
+  updateSnapshots: 'all' | 'changed' | 'missing' | 'none' | 'default';
   timeout?: number;
   toHaveScreenshot?: {
     threshold?: number;
@@ -127,6 +124,7 @@ export type ExpectConfig = {
     caret?: 'hide' | 'initial';
     scale?: 'css' | 'device';
     stylePath?: string | string[];
+    type?: 'png' | 'webp';
     pathTemplate?: string;
     timeout?: number;
     _comparator?: string;
@@ -144,10 +142,10 @@ export type ExpectConfig = {
 };
 
 function unfilteredStackTrace(rawStack: string[]): StackFrame[] {
-  return rawStack.map(frame => parseStackFrame(frame, path.sep, !!process.env.PWDEBUGIMPL)).filter(f => !!f);
+  return rawStack.map(frame => parseStackFrame(frame)).filter(f => !!f);
 }
 
-let _expectConfig: ExpectConfig = { testInfo: null, filteredStackTrace: unfilteredStackTrace, ignoreSnapshots: false, updateSnapshots: 'missing' };
+let _expectConfig: ExpectConfig = { testInfo: null, filteredStackTrace: unfilteredStackTrace, ignoreSnapshots: false, updateSnapshots: 'default' };
 
 export function setExpectConfig(config: ExpectConfig) {
   _expectConfig = config;
@@ -332,20 +330,21 @@ function callMatcherAsStep(matcherName: string, info: ExpectMetaInfo, actual: un
   const testInfo = expectConfig().testInfo;
   const customMessage = info.message || '';
   const suffixes = computeMatcherTitleSuffix(matcherName, actual, args);
-  const defaultTitle = `${info.poll ? 'poll ' : ''}${info.isSoft ? 'soft ' : ''}${info.isNot ? 'not ' : ''}${matcherName}${suffixes.short || ''}`;
-  const shortTitle = customMessage || `Expect ${escapeWithQuotes(defaultTitle, '"')}`;
-  const longTitle = shortTitle + (suffixes.long || '');
-  const apiName = `expect${info.poll ? '.poll ' : ''}${info.isSoft ? '.soft ' : ''}${info.isNot ? '.not' : ''}.${matcherName}${suffixes.short || ''}`;
+  const defaultTitle = `${info.poll ? 'poll ' : ''}${info.isSoft ? 'soft ' : ''}${info.isNot ? 'not ' : ''}${matcherName}${suffixes.titleSuffix || ''}`;
+  const title = customMessage || `Expect ${escapeWithQuotes(defaultTitle, '"')}`;
 
   // This looks like it is unnecessary, but it isn't - we need to filter
   // out all the frames that belong to the test runner from caught runtime errors.
   const stackFrames = expectConfig().filteredStackTrace(captureRawStack());
+  const params: Record<string, any> = { ...suffixes.params };
+  if (args[0])
+    params.expected = args[0];
   const stepData = {
     category: 'expect' as const,
-    apiName,
-    title: longTitle,
-    shortTitle,
-    params: args[0] ? { expected: args[0] } : undefined,
+    title,
+    subtitle: suffixes.subtitle,
+    stack: stackFrames,
+    params: Object.keys(params).length ? params : undefined,
   };
   const step = testInfo?._addStep(stepData);
 
@@ -371,7 +370,7 @@ function callMatcherAsStep(matcherName: string, info: ExpectMetaInfo, actual: un
   try {
     const invoke = () => info.poll
       ? invokePollMatcher(matcherName, info, matcher, actual, args, promise)
-      : invokeMatcher(matcherName, info, matcher, actual, args, promise);
+      : invokeMatcher(matcherName, info, matcher, actual, args, promise, title);
     const result = step ? currentZone().with('stepZone', step).run(invoke) : invoke();
     if (result instanceof Promise)
       return result.then(finalizer, handleError);
@@ -388,6 +387,7 @@ function invokeMatcher(
   actual: unknown,
   args: any[],
   promise: 'resolves' | 'rejects' | undefined,
+  title: string,
 ): MatcherResult | Promise<MatcherResult> {
   const isNot = !!info.isNot;
   const timeout = info.timeout ?? expectConfig().timeout ?? defaultExpectTimeout;
@@ -397,6 +397,7 @@ function invokeMatcher(
     promise: promise ?? '',
     utils,
     timeout,
+    title,
     equals: throwUnsupportedExpectMatcherError as any,
   };
 

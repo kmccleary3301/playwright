@@ -18,11 +18,12 @@ import colors from 'colors/safe';
 import { ManualPromise } from '@isomorphic/manualPromise';
 import { removeFolders } from '@utils/fileUtils';
 import { gracefullyCloseAll } from '@utils/processLauncher';
+import { filteredStackTrace } from '@utils/stackTrace';
 
 import { configLoader, fixtures, ipc, poolBuilder, ProcessRunner, suiteUtils, testLoader } from '../common';
 import * as globals from '../globals';
 import { setExpectConfig } from '../matchers/expect';
-import { debugTest, filteredStackTrace, relativeFilePath } from '../util';
+import { debugTest, relativeFilePath } from '../util';
 import { FixtureRunner } from './fixtureRunner';
 import { TestSkipError, TestInfoImpl, emtpyTestInfoCallbacks } from './testInfo';
 import { testInfoError } from './util';
@@ -222,6 +223,8 @@ export class WorkerMain extends ProcessRunner {
         suiteUtils.applyRepeatEachIndex(this._project, suite, this._params.repeatEachIndex);
       suiteUtils.filterTestsRemoveEmptySuites(suite, test => entries.has(test.id));
       const tests = suite.allTests();
+      for (const test of tests)
+        test.annotations.push(...entries.get(test.id)!.planAnnotations);
 
       // Collect test IDs that were not found in the worker
       // (e.g. test titles changed between runner and worker).
@@ -523,7 +526,7 @@ export class WorkerMain extends ProcessRunner {
 
     this._currentTest = null;
     globals.setCurrentTestInfo(null);
-    setExpectConfig({ testInfo: null, filteredStackTrace, ignoreSnapshots: false, updateSnapshots: 'missing' });
+    setExpectConfig({ testInfo: null, filteredStackTrace, ignoreSnapshots: false, updateSnapshots: 'default' });
     this.dispatchEvent('testEnd', buildTestEndPayload(testInfo));
 
     const preserveOutput = this._config.config.preserveOutput === 'always' ||
@@ -569,7 +572,7 @@ export class WorkerMain extends ProcessRunner {
     let firstError: Error | undefined;
     for (const hook of this._collectHooksAndModifiers(suite, type, testInfo)) {
       try {
-        await testInfo._runAsStep({ title: hook.title, category: 'hook', location: hook.location }, async () => {
+        await testInfo._runAsStep({ title: hook.title, category: 'hook', stack: [hook.location] }, async () => {
           // Separate time slot for each beforeAll/afterAll hook.
           const timeSlot = { timeout: this._project.project.timeout, elapsed: 0 };
           const runnable = { type: hook.type, slot: timeSlot, location: hook.location };
@@ -622,7 +625,7 @@ export class WorkerMain extends ProcessRunner {
         continue;
       }
       try {
-        await testInfo._runAsStep({ title: hook.title, category: 'hook', location: hook.location }, async () => {
+        await testInfo._runAsStep({ title: hook.title, category: 'hook', stack: [hook.location] }, async () => {
           await this._fixtureRunner.resolveParametersAndRunFunction(hook.fn, testInfo, 'test', runnable);
         });
       } catch (error) {

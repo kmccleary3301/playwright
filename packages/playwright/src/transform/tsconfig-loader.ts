@@ -37,6 +37,10 @@ interface TsConfig {
     paths?: { [key: string]: Array<string> };
     strict?: boolean;
     allowJs?: boolean;
+    jsx?: string;
+    jsxFactory?: string;
+    jsxFragmentFactory?: string;
+    jsxImportSource?: string;
   };
   references?: { path: string }[];
 }
@@ -49,7 +53,13 @@ export interface LoadedTsConfig {
   };
   absoluteBaseUrl?: string;
   allowJs?: boolean;
+  jsx?: string;
+  jsxFactory?: string;
+  jsxFragmentFactory?: string;
+  jsxImportSource?: string;
 }
+
+const jsxOptionNames = ['jsx', 'jsxFactory', 'jsxFragmentFactory', 'jsxImportSource'] as const;
 
 export function loadTsConfig(configPath: string): LoadedTsConfig[] {
   try {
@@ -66,9 +76,13 @@ function resolveConfigFile(baseConfigFile: string, referencedConfigFile: string)
     referencedConfigFile += '.json';
   const currentDir = path.dirname(baseConfigFile);
   let resolvedConfigFile = path.resolve(currentDir, referencedConfigFile);
-  // TODO: I don't see how this makes sense, delete in the next minor release.
   if (referencedConfigFile.includes('/') && referencedConfigFile.includes('.') && !fs.existsSync(resolvedConfigFile))
     resolvedConfigFile = path.join(currentDir, 'node_modules', referencedConfigFile);
+  // Note: this function may return a non-existing file, and the caller silently ignores it.
+  // We deliberately do not throw in this case, because we do not want to repeat the whole
+  // resolution process that tsc has, e.g. node_modules walk-up and package.json "exports".
+  // See https://github.com/microsoft/playwright/issues/41989.
+  // TODO: implement tsc-compatible resolution and start throwing on invalid "extends"/"references".
   return resolvedConfigFile;
 }
 
@@ -103,6 +117,10 @@ function innerLoadTsConfig(
 
   if (parsedConfig.compilerOptions?.allowJs !== undefined)
     result.allowJs = parsedConfig.compilerOptions.allowJs;
+  for (const name of jsxOptionNames) {
+    if (parsedConfig.compilerOptions?.[name] !== undefined)
+      result[name] = parsedConfig.compilerOptions[name];
+  }
   if (parsedConfig.compilerOptions?.paths !== undefined) {
     // We must store pathsBasePath from the config that defines "paths" and later resolve
     // based on this absolute path, when no "baseUrl" is specified. See tsc for reference:

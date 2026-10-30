@@ -21,7 +21,8 @@ import { CallTab } from './callTab';
 import { LogTab } from './logTab';
 import { ErrorsTab, useErrorsTabModel } from './errorsTab';
 import { ConsoleTab, useConsoleTabModel } from './consoleTab';
-import type { TraceModel, SourceLocation, ActionTraceEventInContext, SourceModel } from '@isomorphic/trace/traceModel';
+import type { TraceModel, SourceLocation, SourceModel } from '@isomorphic/trace/traceModel';
+import type { ActionEntry } from '@isomorphic/trace/entries';
 import { NetworkTab, useNetworkTabModel } from './networkTab';
 import { SnapshotTabsView } from './snapshotTab';
 import { SourceTab } from './sourceTab';
@@ -57,7 +58,7 @@ export type WorkbenchProps = {
   isLive?: boolean;
   hideTimeline?: boolean;
   status?: UITestStatus;
-  annotations?: TestAnnotation[];
+  defaultAnnotations?: TestAnnotation[];
   inert?: boolean;
   onOpenExternally?: (location: SourceLocation) => void;
   revealSource?: boolean;
@@ -72,7 +73,9 @@ export const Workbench: React.FunctionComponent<WorkbenchProps> = props => {
 };
 
 const PartitionedWorkbench: React.FunctionComponent<WorkbenchProps & { partition: string }> = props => {
-  const { partition, model, showSourcesFirst, rootDir, fallbackLocation, isLive, hideTimeline, status, annotations, inert, onOpenExternally, revealSource, testRunMetadata } = props;
+  const { partition, model, showSourcesFirst, rootDir, fallbackLocation, isLive, hideTimeline, status, inert, onOpenExternally, revealSource, testRunMetadata } = props;
+  // Default annotations come from the test model before the test runs, shown for the empty workbench / trace.
+  const annotations = model?.annotations ?? props.defaultAnnotations;
 
   // UI settings, shared for all models.
   const [selectedNavigatorTab, setSelectedNavigatorTab] = useSetting<string>('navigatorTab',  'actions');
@@ -97,7 +100,7 @@ const PartitionedWorkbench: React.FunctionComponent<WorkbenchProps & { partition
   const [isInspecting, setIsInspectingState] = React.useState(false);
   const [highlightedTime, setHighlightedTime] = React.useState<Boundaries | undefined>(undefined);
 
-  const setSelectedAction = React.useCallback((action: ActionTraceEventInContext | undefined) => {
+  const setSelectedAction = React.useCallback((action: ActionEntry | undefined) => {
     setSelectedCallId(action?.callId);
     setRevealedErrorKey(undefined);
   }, [setSelectedCallId, setRevealedErrorKey]);
@@ -109,7 +112,7 @@ const PartitionedWorkbench: React.FunctionComponent<WorkbenchProps & { partition
     return actions?.find(a => a.callId === highlightedCallId);
   }, [actions, highlightedCallId]);
 
-  const setHighlightedAction = React.useCallback((highlightedAction: ActionTraceEventInContext | undefined) => {
+  const setHighlightedAction = React.useCallback((highlightedAction: ActionEntry | undefined) => {
     setHighlightedCallId(highlightedAction?.callId);
   }, [setHighlightedCallId]);
 
@@ -148,7 +151,7 @@ const PartitionedWorkbench: React.FunctionComponent<WorkbenchProps & { partition
     return highlightedAction || selectedAction;
   }, [selectedAction, highlightedAction]);
 
-  const onActionSelected = React.useCallback((action: ActionTraceEventInContext) => {
+  const onActionSelected = React.useCallback((action: ActionEntry) => {
     setSelectedAction(action);
     setHighlightedAction(undefined);
   }, [setSelectedAction, setHighlightedAction]);
@@ -165,6 +168,7 @@ const PartitionedWorkbench: React.FunctionComponent<WorkbenchProps & { partition
   }, [model]);
 
   const playback = usePlayback(actions || [], selectedAction, onActionSelected, selectedTime, boundaries);
+  const { showSelectedAction } = playback;
 
   const selectPropertiesTab = React.useCallback((tab: string) => {
     setSelectedPropertiesTab(tab);
@@ -175,8 +179,11 @@ const PartitionedWorkbench: React.FunctionComponent<WorkbenchProps & { partition
   const setIsInspecting = React.useCallback((value: boolean) => {
     if (!isInspecting && value)
       selectPropertiesTab('inspector');
+    // Inspecting works against the DOM snapshot, not the screencast frame.
+    if (value)
+      showSelectedAction();
     setIsInspectingState(value);
-  }, [setIsInspectingState, selectPropertiesTab, isInspecting]);
+  }, [setIsInspectingState, selectPropertiesTab, isInspecting, showSelectedAction]);
 
   const elementPicked = React.useCallback((element: HighlightedElement) => {
     setHighlightedElement(element);
@@ -231,7 +238,7 @@ const PartitionedWorkbench: React.FunctionComponent<WorkbenchProps & { partition
     errorCount: errorsModel.errors.size,
     render: () => <ErrorsTab errorsModel={errorsModel} testRunMetadata={testRunMetadata} sdkLanguage={sdkLanguage} revealInSource={error => {
       if (error.action)
-        setSelectedAction(error.action);
+        playback.selectAction(error.action);
       else
         setRevealedErrorKey(error.message);
       selectPropertiesTab('source');
@@ -344,7 +351,7 @@ const PartitionedWorkbench: React.FunctionComponent<WorkbenchProps & { partition
         setSelectedTime={setSelectedTime}
         treeState={treeState}
         setTreeState={setTreeState}
-        onSelected={onActionSelected}
+        onSelected={playback.selectAction}
         onHighlighted={setHighlightedAction}
         revealActionAttachment={revealActionAttachment}
         revealConsole={() => selectPropertiesTab('console')}
@@ -365,8 +372,7 @@ const PartitionedWorkbench: React.FunctionComponent<WorkbenchProps & { partition
     {!hideTimeline && <Timeline
       model={model}
       boundaries={boundaries}
-      onSelected={onActionSelected}
-      sdkLanguage={sdkLanguage}
+      onSelected={playback.selectAction}
       selectedTime={selectedTime}
       setSelectedTime={setSelectedTime}
       highlightedTime={highlightedTime}
@@ -389,6 +395,7 @@ const PartitionedWorkbench: React.FunctionComponent<WorkbenchProps & { partition
           setIsInspecting={setIsInspecting}
           highlightedElement={highlightedElement}
           setHighlightedElement={elementPicked}
+          screencastTime={highlightedAction ? undefined : playback.screencastTime}
           playback={playback} />}
         sidebar={
           <TabbedPane

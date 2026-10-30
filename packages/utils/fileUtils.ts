@@ -88,12 +88,26 @@ export function trimLongString(s: string, length = 100) {
   return s.substring(0, start) + middle + s.slice(-end);
 }
 
+// Does not follow symlinks, see resolveSymlinks.
 export function isPathInside(root: string, candidate: string): boolean {
   const resolvedRoot = path.resolve(root);
   const resolvedCandidate = path.resolve(candidate);
   if (resolvedCandidate === resolvedRoot)
     return true;
   return resolvedCandidate.startsWith(resolvedRoot + path.sep);
+}
+
+// Like realpath, but tolerates a non-existent tail.
+export async function resolveSymlinks(filePath: string): Promise<string> {
+  const resolved = path.resolve(filePath);
+  try {
+    return await fs.promises.realpath(resolved);
+  } catch (e) {
+    const parent = path.dirname(resolved);
+    if (e.code !== 'ENOENT' || parent === resolved)
+      throw e;
+    return path.join(await resolveSymlinks(parent), path.basename(resolved));
+  }
 }
 
 export function resolveWithinRoot(root: string, fileName: string): string | null {
@@ -126,12 +140,11 @@ export function makeSocketPath(domain: string, name: string): string {
   }
   const baseDir = process.env.PWTEST_SOCKETS_DIR || path.join(os.tmpdir(), `pw-${userNameHash}`);
   const dir = path.join(baseDir, domain);
-  const suffix = '.sock';
-  const maxNameLength = UNIX_SOCKET_PATH_MAX - dir.length - path.sep.length - suffix.length;
-  if (maxNameLength < 1)
-    throw new Error(`Socket directory path is too long (${dir.length} chars); set PWTEST_SOCKETS_DIR to a shorter location.`);
-  const fsFriendlyName = trimLongString(sanitizeForFilePath(name), maxNameLength);
-  const result = path.join(dir, `${fsFriendlyName}${suffix}`);
+  let result = path.join(dir, sanitizeForFilePath(name) + '.sock');
+  if (Buffer.byteLength(result) > UNIX_SOCKET_PATH_MAX)
+    result = path.join(dir, calculateSha1(name).slice(0, 16) + '.sock');
+  if (Buffer.byteLength(result) > UNIX_SOCKET_PATH_MAX)
+    throw new Error(`Socket directory path is too long (${Buffer.byteLength(dir)} bytes); set PWTEST_SOCKETS_DIR to a shorter location.`);
   fs.mkdirSync(dir, { recursive: true });
   return result;
 }

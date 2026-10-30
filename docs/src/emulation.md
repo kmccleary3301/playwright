@@ -10,7 +10,7 @@ With Playwright you can test your app on any browser as well as emulate a real d
 ## Devices
 * langs: js, csharp, python
 
-Playwright comes with a [registry of device parameters](https://github.com/microsoft/playwright/blob/main/packages/playwright-core/src/server/deviceDescriptorsSource.json) using [`property: Playwright.devices`] for selected desktop, tablet and mobile devices. It can be used to simulate browser behavior for a specific device such as user agent, screen size, viewport and if it has touch enabled. All tests will run with the specified device parameters.
+Playwright comes with a [registry of device parameters](https://github.com/microsoft/playwright/blob/main/packages/isomorphic/deviceDescriptorsSource.json) using [`property: Playwright.devices`] for selected desktop, tablet and mobile devices. It can be used to simulate browser behavior for a specific device such as user agent, screen size, viewport and if it has touch enabled. All tests will run with the specified device parameters.
 
 ```js tab=js-test title="playwright.config.ts"
 import { defineConfig, devices } from '@playwright/test'; // import devices
@@ -586,7 +586,7 @@ await context.SetGeolocationAsync(new Geolocation() { Longitude = 48.858455, Lat
 **Note** you can only change geolocation for all pages in the context.
 ## Color Scheme and Media
 
-Emulate the users `"colorScheme"`. Supported values are 'light' and 'dark'. You can also emulate the media type with [`method: Page.emulateMedia`].
+Emulate the users `"colorScheme"`. Supported values are 'light', 'dark', and 'no-preference'. You can also emulate the media type with [`method: Page.emulateMedia`].
 
 ```js title="playwright.config.ts"
 import { defineConfig } from '@playwright/test';
@@ -782,6 +782,11 @@ context = browser.new_context(
 ```csharp
 var context = await browser.NewContextAsync(new() { Offline = true });
 ```
+
+:::note
+Offline emulation only affects requests that go through the browser's regular network stack, such as page navigations, `fetch()`, `XMLHttpRequest` and WebSockets. It does not affect WebRTC traffic: established `RTCPeerConnection`s keep sending and receiving media over UDP. To test WebRTC connection loss, interrupt the connection outside the browser, for example by stopping the TURN server or using an OS-level firewall.
+:::
+
 ## JavaScript Enabled
 
 Emulate a user scenario where JavaScript is disabled.

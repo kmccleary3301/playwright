@@ -18,18 +18,16 @@ import fs from 'fs';
 import path from 'path';
 
 import * as playwrightLibrary from 'playwright-core';
-import { asLocatorDescription } from '@isomorphic/locatorGenerators';
-import { getActionGroup, renderTitleForCall } from '@isomorphic/protocolFormatter';
-import { setBoxedStackPrefixes } from '@isomorphic/stackTrace';
+import { getActionGroup, renderParamsForCall, renderSubtitleForCall, renderTitleForCall, truncateParam } from '@isomorphic/protocolFormatter';
 import { escapeHTML } from '@isomorphic/stringUtils';
 import { jsonStringifyForceASCII } from '@utils/ascii';
 import { createGuid } from '@utils/crypto';
 import { debugMode } from '@utils/debug';
+import { debugLogger } from '@utils/debugLogger';
 import { currentZone } from '@utils/zones';
 import { buildErrorContext } from './errorContext';
 import { config, testType } from './common';
 import * as globals from './globals';
-import { packageRoot } from './package';
 import { createCustomMessageHandler, runDaemonForContext } from './mcp/test/browserBackend';
 
 import type { Fixtures, PlaywrightTestArgs, PlaywrightTestOptions, PlaywrightWorkerArgs, PlaywrightWorkerOptions, ScreenshotMode, TestInfo, TestType, VideoMode } from '../types/test';
@@ -45,8 +43,6 @@ import type { BrowserContext, BrowserContextOptions, LaunchOptions, Page, Tracin
 
 export { expect } from './matchers/expect';
 export const _baseTest: TestType<{}, {}> = testType.rootTestType.test;
-
-setBoxedStackPrefixes([packageRoot]);
 
 if ((process as any)['__pw_initiator__']) {
   const originalStackTraceLimit = Error.stackTraceLimit;
@@ -100,48 +96,41 @@ const utilityFixtures: Fixtures<UtilityTestFixtures, UtilityWorkerFixtures> = {
     const csiListener: ClientInstrumentationListener = {
       onApiCallBegin: (data, channel) => {
         const testInfo = globals.currentTestInfo();
-        // Some special calls do not get into steps.
-        if (!testInfo || data.apiName.includes('setTestIdAttribute') || data.apiName === 'tracing.groupEnd')
+        if (!testInfo)
           return;
+        if (channel.type === 'Tracing' && channel.method === 'tracingGroupEnd') {
+          // The "tracing.group" step ends together with the "tracing.groupEnd" call.
+          data.userData = (error?: Error) => tracingGroupSteps.pop()?.complete({ error });
+          return;
+        }
         const zone = currentZone().data<TestStepInternal>('stepZone');
-        const isExpectCall = data.apiName === 'locator._expect' || data.apiName === 'frame._expect' || data.apiName === 'page._expectScreenshot';
+        const isExpectCall = (channel.type === 'Frame' && channel.method === 'expect') || (channel.type === 'Page' && channel.method === 'expectScreenshot');
         if (zone && zone.category === 'expect' && isExpectCall) {
-          // Display the internal locator._expect call under the name of the enclosing expect call,
-          // and connect it to the existing expect step.
-          if (zone.apiName)
-            data.apiName = zone.apiName;
-          if (zone.shortTitle || zone.title)
-            data.title = zone.shortTitle ?? zone.title;
-          data.stepId = zone.stepId;
+          data.callId = zone.stepId;
           return;
         }
 
-        // In the general case, create a step for each api call and connect them through the stepId.
+        // In the general case, create a step for each api call, use it as a callId.
+        const params = renderParamsForCall({ type: channel.type, method: channel.method, params: channel.params });
         const step = testInfo._addStep({
-          location: data.frames[0],
+          stack: data.frames,
           category: 'pw:api',
           title: renderTitle(channel.type, channel.method, channel.params, data.title),
-          apiName: data.apiName,
-          params: channel.params,
+          subtitle: renderSubtitle(channel.type, channel.method, channel.params),
+          params,
           group: getActionGroup({ type: channel.type, method: channel.method }),
         }, tracingGroupSteps[tracingGroupSteps.length - 1]);
-        data.userData = step;
-        data.stepId = step.stepId;
-        if (data.apiName === 'tracing.group')
+        data.callId = step.stepId;
+        if (channel.type === 'Tracing' && channel.method === 'tracingGroup') {
+          // The step will end later, when the corresponding "tracing.groupEnd" call finishes.
           tracingGroupSteps.push(step);
+        } else {
+          data.userData = (error?: Error) => step.complete({ error });
+        }
       },
       onApiCallEnd: data => {
-
-        // "tracing.group" step will end later, when "tracing.groupEnd" finishes.
-        if (data.apiName === 'tracing.group')
-          return;
-        if (data.apiName === 'tracing.groupEnd') {
-          const step = tracingGroupSteps.pop();
-          step?.complete({ error: data.error });
-          return;
-        }
-        const step = data.userData;
-        step?.complete({ error: data.error });
+        const completeStep = data.userData as ((error?: Error) => void) | undefined;
+        completeStep?.(data.error);
       },
       onWillPause: ({ keepTestTimeout }) => {
         if (!keepTestTimeout)
@@ -275,8 +264,10 @@ const playwrightFixtures: Fixtures<TestFixtures, WorkerFixtures, UtilityTestFixt
   acceptDownloads: [({ contextOptions }, use) => use(contextOptions.acceptDownloads ?? true), { option: true, box: true }],
   bypassCSP: [({ contextOptions }, use) => use(contextOptions.bypassCSP ?? false), { option: true, box: true }],
   colorScheme: [({ contextOptions }, use) => use(contextOptions.colorScheme === undefined ? 'light' : contextOptions.colorScheme), { option: true, box: true }],
+  contrast: [({ contextOptions }, use) => use(contextOptions.contrast === undefined ? 'no-preference' : contextOptions.contrast), { option: true, box: true }],
   deviceScaleFactor: [({ contextOptions }, use) => use(contextOptions.deviceScaleFactor), { option: true, box: true }],
   extraHTTPHeaders: [({ contextOptions }, use) => use(contextOptions.extraHTTPHeaders), { option: true, box: true }],
+  forcedColors: [({ contextOptions }, use) => use(contextOptions.forcedColors === undefined ? 'none' : contextOptions.forcedColors), { option: true, box: true }],
   geolocation: [({ contextOptions }, use) => use(contextOptions.geolocation), { option: true, box: true }],
   hasTouch: [({ contextOptions }, use) => use(contextOptions.hasTouch ?? false), { option: true, box: true }],
   httpCredentials: [({ contextOptions }, use) => use(contextOptions.httpCredentials), { option: true, box: true }],
@@ -287,6 +278,8 @@ const playwrightFixtures: Fixtures<TestFixtures, WorkerFixtures, UtilityTestFixt
   offline: [({ contextOptions }, use) => use(contextOptions.offline ?? false), { option: true, box: true }],
   permissions: [({ contextOptions }, use) => use(contextOptions.permissions), { option: true, box: true }],
   proxy: [({ contextOptions }, use) => use(contextOptions.proxy), { option: true, box: true }],
+  reducedMotion: [({ contextOptions }, use) => use(contextOptions.reducedMotion === undefined ? 'no-preference' : contextOptions.reducedMotion), { option: true, box: true }],
+  screen: [({ contextOptions }, use) => use(contextOptions.screen), { option: true, box: true }],
   storageState: [({ contextOptions }, use) => use(contextOptions.storageState), { option: true, box: true }],
   clientCertificates: [({ contextOptions }, use) => use(contextOptions.clientCertificates), { option: true, box: true }],
   timezoneId: [({ contextOptions }, use) => use(contextOptions.timezoneId), { option: true, box: true }],
@@ -304,8 +297,10 @@ const playwrightFixtures: Fixtures<TestFixtures, WorkerFixtures, UtilityTestFixt
     bypassCSP,
     clientCertificates,
     colorScheme,
+    contrast,
     deviceScaleFactor,
     extraHTTPHeaders,
+    forcedColors,
     hasTouch,
     geolocation,
     httpCredentials,
@@ -316,6 +311,8 @@ const playwrightFixtures: Fixtures<TestFixtures, WorkerFixtures, UtilityTestFixt
     offline,
     permissions,
     proxy,
+    reducedMotion,
+    screen,
     storageState,
     viewport,
     timezoneId,
@@ -331,10 +328,14 @@ const playwrightFixtures: Fixtures<TestFixtures, WorkerFixtures, UtilityTestFixt
       options.bypassCSP = bypassCSP;
     if (colorScheme !== undefined)
       options.colorScheme = colorScheme;
+    if (contrast !== undefined)
+      options.contrast = contrast;
     if (deviceScaleFactor !== undefined)
       options.deviceScaleFactor = deviceScaleFactor;
     if (extraHTTPHeaders !== undefined)
       options.extraHTTPHeaders = extraHTTPHeaders;
+    if (forcedColors !== undefined)
+      options.forcedColors = forcedColors;
     if (geolocation !== undefined)
       options.geolocation = geolocation;
     if (hasTouch !== undefined)
@@ -355,6 +356,10 @@ const playwrightFixtures: Fixtures<TestFixtures, WorkerFixtures, UtilityTestFixt
       options.permissions = permissions;
     if (proxy !== undefined)
       options.proxy = proxy;
+    if (reducedMotion !== undefined)
+      options.reducedMotion = reducedMotion;
+    if (screen !== undefined)
+      options.screen = screen;
     if (storageState !== undefined)
       options.storageState = storageState;
     if (clientCertificates?.length)
@@ -413,6 +418,7 @@ const playwrightFixtures: Fixtures<TestFixtures, WorkerFixtures, UtilityTestFixt
         recordVideo: {
           dir: tracing().artifactsDir(),
           size: typeof video === 'string' ? undefined : video.size,
+          fps: typeof video === 'string' ? undefined : video.fps,
           showActions: show?.actions,
         }
       } : {};
@@ -455,9 +461,11 @@ const playwrightFixtures: Fixtures<TestFixtures, WorkerFixtures, UtilityTestFixt
   _optionContextReuseMode: ['none', { scope: 'worker', option: true, box: true }],
   _optionConnectOptions: [undefined, { scope: 'worker', option: true, box: true }],
 
-  _reuseContext: [async ({ video, _optionContextReuseMode }, use) => {
+  reuseContext: [false, { scope: 'worker', option: true, box: true }],
+
+  _reuseContext: [async ({ video, _optionContextReuseMode, reuseContext }, use) => {
     let mode = _optionContextReuseMode;
-    if (process.env.PW_TEST_REUSE_CONTEXT)
+    if (process.env.PW_TEST_REUSE_CONTEXT || reuseContext)
       mode = 'when-possible';
     const reuse = mode === 'when-possible' && normalizeVideoMode(video) === 'off';
     await use(reuse);
@@ -494,6 +502,34 @@ const playwrightFixtures: Fixtures<TestFixtures, WorkerFixtures, UtilityTestFixt
     if (!page)
       page = await context.newPage();
     await use(page);
+  },
+
+  mount: async ({ page, baseURL }, use) => {
+    // exposeFunctions turns any callbacks in props into real, browser-callable
+    // functions that dispatch back to the test.
+    const callMount = (params: { story: string, props?: Record<string, any> }) =>
+      page.evaluate(async p => {
+        const w = window as any;
+        if (typeof w.mount !== 'function')
+          throw new Error('The gallery page does not define window.mount().');
+        await w.mount(p);
+      }, params, { exposeFunctions: true });
+    await use(async (storyId: string, props?: any) => {
+      if (!baseURL)
+        throw new Error('mount() requires `baseURL` to point at the component gallery. Set it in your Playwright config.');
+      // The gallery is a single page (served at baseURL) that exposes window.mount()/window.unmount().
+      await page.goto(baseURL);
+      await callMount({ story: storyId, props });
+      // Points at the gallery root, scope the queries: component.getByRole(...).
+      return Object.assign(page.locator('#root'), {
+        // update() re-renders the same story with new props without navigating; if the gallery
+        // reuses its root/instance, the framework reconciles and component state is preserved.
+        update: (newProps?: any) => callMount({ story: storyId, props: newProps }),
+        unmount: () => page.evaluate(async () => {
+          await (window as any).unmount?.();
+        }),
+      });
+    });
   },
 });
 
@@ -718,6 +754,7 @@ class ArtifactsRecorder {
 
   async didCreateBrowserContext(context: BrowserContextImpl) {
     await this._startTraceChunkOnContextCreation(context, context.tracing);
+    await this._startTraceChunkOnContextCreation(context.request, context.request.tracing);
   }
 
   async willCloseBrowserContext(context: BrowserContextImpl) {
@@ -744,7 +781,9 @@ class ArtifactsRecorder {
       await page._wrapApiCall(async () => {
         this._pageSnapshot = await page.ariaSnapshot({ mode: 'ai', timeout: 5000 });
       }, { internal: true });
-    } catch {}
+    } catch (error) {
+      debugLogger.log('error', `failed to capture aria snapshot: ${error}`);
+    }
   }
 
   async didCreateRequestContext(context: APIRequestContextImpl) {
@@ -767,6 +806,7 @@ class ArtifactsRecorder {
 
     // Collect traces/screenshots for remaining contexts.
     await Promise.all(leftoverContexts.map(async context => {
+      await this._stopTracing(context.request, context.request.tracing);
       await this._stopTracing(context, context.tracing);
     }).concat(leftoverApiRequests.map(async context => {
       await this._stopTracing(context, context.tracing);
@@ -841,7 +881,7 @@ async function installScreencastTitleUpdater(testInfo: TestInfoImpl, context: Br
   const fontSize = testAnnotate.fontSize ?? 14;
   const level = testAnnotate.level ?? 'step';
 
-  const updateOverlay = async () => {
+  const doUpdateOverlay = async () => {
     const parts = level === 'step' ? [...testTitle, ...stepStack] : testTitle;
     const html = createTestOverlay(parts, position, fontSize);
     for (const page of context.pages()) {
@@ -850,6 +890,12 @@ async function installScreencastTitleUpdater(testInfo: TestInfoImpl, context: Br
       const disposable = await page.screencast.showOverlay(html);
       overlays.set(page, disposable);
     }
+  };
+  let lastUpdate = Promise.resolve();
+  const updateOverlay = () => {
+    const result = lastUpdate.then(doUpdateOverlay);
+    lastUpdate = result.catch(() => {});
+    return result;
   };
   testInfo._onUserStepBegin = async title => {
     stepStack.push(title);
@@ -881,12 +927,13 @@ function createTestOverlay(parts: string[], position: string, fontSize: number) 
   </div>`;
 }
 
-function renderTitle(type: string, method: string, params: Record<string, string> | undefined, title?: string) {
-  const prefix = renderTitleForCall({ title, type, method, params });
-  let selector;
-  if (params?.['selector'] && typeof params.selector === 'string')
-    selector = asLocatorDescription('javascript', params.selector);
-  return prefix + (selector ? ` ${selector}` : '');
+function renderTitle(type: string, method: string, params: Record<string, string> | undefined, title: string | undefined) {
+  return renderTitleForCall({ title, type, method, params });
+}
+
+function renderSubtitle(type: string, method: string, params: Record<string, string> | undefined) {
+  const subtitle = renderSubtitleForCall({ type, method, params });
+  return subtitle === undefined ? undefined : truncateParam(subtitle);
 }
 
 function tracing() {

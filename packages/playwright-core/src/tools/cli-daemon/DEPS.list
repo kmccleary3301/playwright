@@ -1,6 +1,8 @@
 [*]
+../../bootstrap.ts
 ../../package.ts
 ../utils/socketConnection.ts
+../utils/installSkills.ts
 ../cli-client/registry.ts
 ../backend/
 ../mcp/

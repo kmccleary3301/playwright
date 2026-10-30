@@ -42,7 +42,7 @@ export class Session {
     return compareSemver(clientInfo.version, this.config.version) >= 0;
   }
 
-  async run(clientInfo: ClientInfo, args: MinimistArgs, options?: { raw?: boolean, json?: boolean }): Promise<{ text: string }> {
+  async run(clientInfo: ClientInfo, args: MinimistArgs, options?: { raw?: boolean, json?: boolean }): Promise<{ text: string, isError?: boolean }> {
     if (!this.isCompatible(clientInfo))
       throw new Error(`Client is v${clientInfo.version}, session '${this.name}' is v${this.config.version}. Run\n\n  playwright-cli${this.name !== 'default' ? ` -s=${this.name}` : ''} open\n\nto restart the browser session.`);
 
@@ -125,6 +125,10 @@ export class Session {
     ];
     if (cliArgs.headed)
       args.push('--headed');
+    if (cliArgs.mobile)
+      args.push('--mobile');
+    if (cliArgs.device)
+      args.push(`--device=${cliArgs.device}`);
     if (cliArgs.browser)
       args.push(`--browser=${cliArgs.browser}`);
     if (cliArgs.persistent)
@@ -133,6 +137,8 @@ export class Session {
       args.push(`--profile=${cliArgs.profile}`);
     if (cliArgs.config)
       args.push(`--config=${cliArgs.config}`);
+    if (cliArgs['idle-timeout'] !== undefined)
+      args.push(`--idle-timeout=${cliArgs['idle-timeout']}`);
     if (cliArgs.extension)
       args.push('--extension');
     else if (cliArgs.cdp)
@@ -144,6 +150,7 @@ export class Session {
       detached: true,
       stdio: ['ignore', 'pipe', err],
       cwd: process.cwd(), // Will be used as root.
+      windowsHide: true,
     });
 
     let signalled = false;

@@ -31,6 +31,12 @@ ShowActionsOptions:
       literals:
       - none
       - pointer
+    style:
+      type: object?
+      properties:
+        point: string?
+        highlight: string?
+        title: string?
 
 CommonScreenshotOptions:
   type: mixin
@@ -76,7 +82,6 @@ LaunchOptions:
     handleSIGINT: boolean?
     handleSIGTERM: boolean?
     handleSIGHUP: boolean?
-    timeout: float
     env:
       type: array?
       items: NameValue
@@ -94,6 +99,18 @@ LaunchOptions:
     chromiumSandbox: boolean?
     firefoxUserPrefs: json?
     cdpPort: int?
+
+HttpCredentials:
+  type: object
+  properties:
+    username: string
+    password: string
+    origin: string?
+    send:
+      type: enum?
+      literals:
+      - always
+      - unauthorized
 
 ContextOptions:
   type: mixin
@@ -139,16 +156,8 @@ ContextOptions:
       items: NameValue
     offline: boolean?
     httpCredentials:
-      type: object?
-      properties:
-        username: string
-        password: string
-        origin: string?
-        send:
-          type: enum?
-          literals:
-          - always
-          - unauthorized
+      type: array?
+      items: HttpCredentials
     deviceScaleFactor: float?
     isMobile: boolean?
     hasTouch: boolean?
@@ -193,6 +202,7 @@ ContextOptions:
           properties:
             width: int
             height: int
+        fps: int?
         showActions:
           type: object?
           properties:

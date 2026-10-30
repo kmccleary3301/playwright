@@ -26,11 +26,14 @@ test('test snapshot tool list', async ({ client }) => {
     'browser_evaluate',
     'browser_file_upload',
     'browser_fill_form',
+    'browser_find',
     'browser_handle_dialog',
     'browser_hover',
     'browser_select_option',
+    'browser_markdown',
     'browser_type',
     'browser_close',
+    'browser_emulate_media',
     'browser_navigate_back',
     'browser_navigate',
     'browser_network_request',
@@ -87,6 +90,7 @@ test('test capabilities (styles)', async ({ startClient }) => {
   expect(toolNames).toContain('browser_style_diff');
   expect(toolNames).toContain('browser_layout_snapshot');
   expect(toolNames).toContain('browser_layout_diff');
+  expect(toolNames).toContain('browser_css_rules');
 });
 
 test('test capabilities (scenarios)', async ({ startClient }) => {

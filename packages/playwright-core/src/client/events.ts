@@ -36,13 +36,15 @@ export const Events = {
   },
 
   Debugger: {
-    PausedStateChanged: 'pausedstatechanged'
+    PausedStateChanged: 'pausedstatechanged',
+    ApiCallsUpdated: 'apicallsupdated',
   },
 
   BrowserContext: {
     Console: 'console',
     Close: 'close',
     Dialog: 'dialog',
+    DialogClosed: 'dialogclosed',
     Download: 'download',
     FrameAttached: 'frameattached',
     FrameDetached: 'framedetached',
@@ -70,6 +72,7 @@ export const Events = {
     Crash: 'crash',
     Console: 'console',
     Dialog: 'dialog',
+    DialogClosed: 'dialogclosed',
     Download: 'download',
     FileChooser: 'filechooser',
     DOMContentLoaded: 'domcontentloaded',

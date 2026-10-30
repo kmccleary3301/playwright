@@ -84,6 +84,7 @@ BrowserContext:
       group: configuration
       parameters:
         name: string
+        noGlobal: boolean?
       returns:
         disposable: Disposable
 
@@ -135,11 +136,8 @@ BrowserContext:
       group: configuration
       parameters:
         httpCredentials:
-          type: object?
-          properties:
-            username: string
-            password: string
-            origin: string?
+          type: array?
+          items: HttpCredentials
 
     setNetworkInterceptionPatterns:
       title: Route requests
@@ -171,6 +169,8 @@ BrowserContext:
 
     setOffline:
       title: Set offline mode
+      renderParams:
+      - offline
       parameters:
         offline: boolean
 
@@ -179,6 +179,7 @@ BrowserContext:
       group: configuration
       parameters:
         indexedDB: boolean?
+        opfs: boolean?
         credentials: boolean?
       returns:
         cookies:
@@ -206,12 +207,13 @@ BrowserContext:
               items: SetOriginStorage
             credentials:
               type: array?
-              items: VirtualCredential
+              items: SetVirtualCredential
 
     pause:
       title: Pause
 
-    enableRecorder:
+    # Shows the recorder window. Throws while a programmatic recording is in progress.
+    showRecorder:
       internal: true
       parameters:
         language: string?
@@ -220,11 +222,6 @@ BrowserContext:
           literals:
           - inspecting
           - recording
-        recorderMode:
-          type: enum?
-          literals:
-          - default
-          - api
         pauseOnNextStatement: boolean?
         testIdAttributeName: string?
         launchOptions: json?
@@ -235,7 +232,12 @@ BrowserContext:
         handleSIGINT: boolean?
         omitCallTracking: boolean?
 
-    disableRecorder:
+    startRecording:
+      internal: true
+      parameters:
+        language: string?
+
+    stopRecording:
       internal: true
 
     exposeConsoleApi:
@@ -275,6 +277,7 @@ BrowserContext:
           literals:
           - console
           - dialog
+          - dialogClosed
           - request
           - response
           - requestFinished
@@ -333,6 +336,7 @@ BrowserContext:
         userHandle: string?
         privateKey: string?
         publicKey: string?
+        signCount: int?
       returns:
         credential: VirtualCredential
 
@@ -368,6 +372,10 @@ BrowserContext:
     close:
 
     dialog:
+      parameters:
+        dialog: Dialog
+
+    dialogClosed:
       parameters:
         dialog: Dialog
 

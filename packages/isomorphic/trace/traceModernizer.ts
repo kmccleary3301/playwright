@@ -14,13 +14,17 @@
  * limitations under the License.
  */
 
-import type * as trace from '@trace/trace';
+import { legacyCallId, parseClientSideCallMetadata } from './traceUtils';
+
+import type { SerializedStack } from './traceUtils';
+import type * as trace from './trace';
 import type * as traceV3 from './versions/traceV3';
 import type * as traceV4 from './versions/traceV4';
 import type * as traceV5 from './versions/traceV5';
 import type * as traceV6 from './versions/traceV6';
 import type * as traceV7 from './versions/traceV7';
 import type * as traceV8 from './versions/traceV8';
+import type * as traceV9 from './versions/traceV9';
 import type { ActionEntry, ContextEntry, PageEntry } from './entries';
 import type { SnapshotStorage } from './snapshotStorage';
 
@@ -31,9 +35,10 @@ export class TraceVersionError extends Error {
   }
 }
 
-// 6 => 10/2023 ~1.40
-// 7 => 05/2024 ~1.45
-const latestVersion: trace.VERSION = 8;
+const latestVersion: trace.VERSION = 10;
+
+// Ensures distinct api request refs across contexts of the same trace.
+let lastApiRequestRefOrdinal = 0;
 
 export class TraceModernizer {
   private _contextEntry: ContextEntry;
@@ -43,6 +48,9 @@ export class TraceModernizer {
   private _pageEntries = new Map<string, PageEntry>();
   private _jsHandles = new Map<string, { preview: string }>();
   private _consoleObjects = new Map<string, { type: string, text: string, location: { url: string, lineNumber: number, columnNumber: number }, args?: { preview: string, value: string }[] }>();
+  private _apiRequestRef: string | undefined;
+  private _snapshotPhases = new Map<string, trace.ActionPhase>();
+  private _legacyCallIdToStepId = new Map<string, string>();
 
   constructor(contextEntry: ContextEntry, snapshotStorage: SnapshotStorage) {
     this._contextEntry = contextEntry;
@@ -54,8 +62,25 @@ export class TraceModernizer {
       this._appendEvent(line);
   }
 
+  appendStacks(stacks: string) {
+    const data = JSON.parse(stacks);
+    const normalized: SerializedStack[] = data.stacks.map(([id, ...rest]: any) => {
+      // Transform legacy numeric call ids into string ids.
+      const callId = typeof id === 'number' ? legacyCallId(id) : id;
+      return [this._legacyCallIdToStepId.get(callId) ?? callId, ...rest];
+    });
+    const callMetadata = parseClientSideCallMetadata({ files: data.files, stacks: normalized });
+    for (const action of this._actionMap.values())
+      action.stack = action.stack || callMetadata.get(action.callId);
+  }
+
   actions(): ActionEntry[] {
     return [...this._actionMap.values()];
+  }
+
+  private _collectSnapshotPhase(snapshotName: string | undefined, phase: trace.ActionPhase) {
+    if (snapshotName)
+      this._snapshotPhases.set(snapshotName, phase);
   }
 
   private _pageEntry(pageId: string): PageEntry {
@@ -93,16 +118,29 @@ export class TraceModernizer {
         contextEntry.platform = event.platform;
         contextEntry.playwrightVersion = event.playwrightVersion;
         contextEntry.wallTime = event.wallTime;
+        contextEntry.monotonicTime = event.monotonicTime;
         contextEntry.startTime = event.monotonicTime;
         contextEntry.sdkLanguage = event.sdkLanguage;
         contextEntry.options = event.options;
         contextEntry.testIdAttributeName = event.testIdAttributeName;
-        contextEntry.contextId = event.contextId ?? '';
         contextEntry.testTimeout = event.testTimeout;
+        contextEntry.annotations = event.annotations;
         break;
       }
       case 'screencast-frame': {
         this._pageEntry(event.pageId).screencastFrames.push(event);
+        break;
+      }
+      case 'screenshot': {
+        contextEntry.screenshots.push(event);
+        break;
+      }
+      case 'video': {
+        contextEntry.videos.push(event);
+        break;
+      }
+      case 'aria-snapshot': {
+        contextEntry.ariaSnapshots.push(event);
         break;
       }
       case 'before': {
@@ -111,8 +149,8 @@ export class TraceModernizer {
       }
       case 'input': {
         const existing = this._actionMap.get(event.callId);
-        existing!.inputSnapshot = event.inputSnapshot;
         existing!.point = event.point;
+        existing!.box = event.box;
         break;
       }
       case 'log': {
@@ -128,7 +166,6 @@ export class TraceModernizer {
       }
       case 'after': {
         const existing = this._actionMap.get(event.callId);
-        existing!.afterSnapshot = event.afterSnapshot;
         existing!.endTime = event.endTime;
         existing!.result = event.result;
         existing!.error = event.error;
@@ -143,6 +180,9 @@ export class TraceModernizer {
         break;
       }
       case 'event': {
+        // Make sure there is a page entry for each page.
+        if ((event.method === 'page' || event.method === 'pageClosed') && event.params?.pageId)
+          this._pageEntry(event.params.pageId);
         contextEntry.events.push(event);
         break;
       }
@@ -163,12 +203,16 @@ export class TraceModernizer {
         break;
       }
       case 'resource-snapshot':
-        this._snapshotStorage.addResource(this._contextEntry.contextId, event.snapshot);
+        this._snapshotStorage.addResource(event.snapshot);
         contextEntry.resources.push(event.snapshot);
         break;
-      case 'frame-snapshot':
-        this._snapshotStorage.addFrameSnapshot(this._contextEntry.contextId, event.snapshot, this._pageEntry(event.snapshot.pageId).screencastFrames);
+      case 'frame-snapshot': {
+        const snapshot = event.snapshot;
+        this._snapshotStorage.addFrameSnapshot(snapshot, this._pageEntry(snapshot.pageId).screencastFrames);
+        if (snapshot.isMainFrame && snapshot.phase)
+          contextEntry.domSnapshots.push({ callId: snapshot.callId, phase: snapshot.phase });
         break;
+      }
     }
     // Make sure there is a page entry for each page, even without screencast frames,
     // to show in the metadata view.
@@ -406,9 +450,10 @@ export class TraceModernizer {
         continue;
       }
       if (event.type === 'before' || event.type === 'action') {
-        // Take wall and monotonic time from the first event.
-        if (!this._contextEntry.wallTime)
+        if (!this._contextEntry.monotonicTime) {
+          this._contextEntry.monotonicTime = (event as traceV6.BeforeActionTraceEvent).startTime;
           this._contextEntry.wallTime = event.wallTime;
+        }
         const eventAsV6 = event as traceV6.BeforeActionTraceEvent;
         const eventAsV7 = event as traceV7.BeforeActionTraceEvent;
         eventAsV7.stepId = `${eventAsV6.apiName}@${eventAsV6.wallTime}`;
@@ -437,5 +482,86 @@ export class TraceModernizer {
       }
     }
     return result;
+  }
+
+  _modernize_8_to_9(events: traceV8.TraceEvent[]): traceV9.TraceEvent[] {
+    for (const event of events) {
+      // Actions used to point at their snapshots by name, now snapshots know their own phase.
+      if (event.type === 'before' || event.type === 'input' || event.type === 'after' || event.type === 'action') {
+        const action = event as traceV8.ActionTraceEvent;
+        this._collectSnapshotPhase(action.beforeSnapshot, 'before');
+        this._collectSnapshotPhase(action.inputSnapshot, 'action');
+        this._collectSnapshotPhase(action.afterSnapshot, 'after');
+        delete action.beforeSnapshot;
+        delete action.inputSnapshot;
+        delete action.afterSnapshot;
+      }
+
+      // Blobs used to be referenced by a bare sha1-style name, now they use a trace-relative path.
+      if (event.type === 'after' || event.type === 'action') {
+        for (const attachment of event.attachments || []) {
+          if (attachment.sha1) {
+            (attachment as traceV9.AfterActionTraceEventAttachment).file = 'resources/' + attachment.sha1;
+            delete attachment.sha1;
+          }
+        }
+      }
+      if (event.type === 'screencast-frame' && event.sha1) {
+        (event as any as traceV9.ScreencastFrameTraceEvent).file = 'resources/' + event.sha1;
+        delete (event as any).sha1;
+      }
+
+      if (event.type === 'frame-snapshot') {
+        if (event.snapshot.snapshotName)
+          (event.snapshot as traceV9.FrameSnapshot).phase = this._snapshotPhases.get(event.snapshot.snapshotName);
+        for (const override of event.snapshot.resourceOverrides || []) {
+          if (override.sha1) {
+            (override as traceV9.ResourceOverride).file = 'resources/' + override.sha1;
+            delete override.sha1;
+          }
+        }
+      }
+
+      if (event.type === 'resource-snapshot') {
+        const postData = event.snapshot.request?.postData;
+        if (postData?._sha1) {
+          postData._file = 'resources/' + postData._sha1;
+          delete postData._sha1;
+        }
+        const content = event.snapshot.response?.content;
+        if (content?._sha1) {
+          content._file = 'resources/' + content._sha1;
+          delete content._sha1;
+        }
+        // Older hars marked api requests with a boolean instead of referencing their api request context.
+        if (event.snapshot._apiRequest) {
+          if (!this._apiRequestRef)
+            this._apiRequestRef = 'api-request-context@' + (++lastApiRequestRefOrdinal);
+          (event as traceV9.ResourceSnapshotTraceEvent).snapshot._apiRequestRef = this._apiRequestRef;
+          delete event.snapshot._apiRequest;
+        }
+      }
+    }
+    return events as traceV9.TraceEvent[];
+  }
+
+  _modernize_9_to_10(events: traceV9.TraceEvent[]): trace.TraceEvent[] {
+    for (const event of events) {
+      // The library and the test runner used to mint their own id for the same call and reconcile
+      // them through a `stepId` side-channel. Now they share a single id - adopt the step id as the
+      // call id, remembering the mapping for the ids that `appendStacks` will see.
+      if (event.type === 'before' || event.type === 'action') {
+        if (event.stepId && event.stepId !== event.callId)
+          this._legacyCallIdToStepId.set(event.callId, event.stepId);
+        delete event.stepId;
+        if (event.parentId)
+          event.parentId = this._legacyCallIdToStepId.get(event.parentId) ?? event.parentId;
+      }
+      if (event.type === 'before' || event.type === 'input' || event.type === 'after' || event.type === 'action' || event.type === 'log')
+        event.callId = this._legacyCallIdToStepId.get(event.callId) ?? event.callId;
+      if (event.type === 'frame-snapshot')
+        event.snapshot.callId = this._legacyCallIdToStepId.get(event.snapshot.callId) ?? event.snapshot.callId;
+    }
+    return events as trace.TraceEvent[];
   }
 }

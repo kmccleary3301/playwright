@@ -15,11 +15,13 @@
  */
 
 export * from './ariaSnapshot';
+export * from './ariaSnapshotRenderer';
 export * from './assert';
 export * from './base64';
 export * from './colors';
 export * from './headers';
 export * from './imageUtils';
+export * from './istanbulCoverage';
 export * from './jsonSchema';
 export * from './locatorGenerators';
 export * from './manualPromise';
@@ -29,7 +31,6 @@ export * from './protocolFormatter';
 export * from './protocolMetainfo';
 export * from './rtti';
 export * from './semaphore';
-export * from './stackTrace';
 export * from './stringUtils';
 export * from './formatUtils';
 export * from './time';

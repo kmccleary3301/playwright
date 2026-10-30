@@ -187,7 +187,7 @@ export class ElementHandleDispatcher extends JSHandleDispatcher<FrameDispatcher>
   }
 
   async querySelector(params: channels.ElementHandleQuerySelectorParams, progress: Progress): Promise<channels.ElementHandleQuerySelectorResult> {
-    const handle = await this._elementHandle.querySelector(progress, params.selector, params);
+    const handle = await this._elementHandle.querySelector(progress, params);
     return { element: ElementHandleDispatcher.fromNullable(this.parentScope(), handle) };
   }
 
@@ -197,7 +197,7 @@ export class ElementHandleDispatcher extends JSHandleDispatcher<FrameDispatcher>
   }
 
   async evalOnSelector(params: channels.ElementHandleEvalOnSelectorParams, progress: Progress): Promise<channels.ElementHandleEvalOnSelectorResult> {
-    return { value: serializeResult(await this._elementHandle.evalOnSelector(progress, params.selector, !!params.strict, params.expression, params.isFunction, parseArgument(params.arg))) };
+    return { value: serializeResult(await this._elementHandle.evalOnSelector(progress, params, params.expression, params.isFunction, parseArgument(params.arg))) };
   }
 
   async evalOnSelectorAll(params: channels.ElementHandleEvalOnSelectorAllParams, progress: Progress): Promise<channels.ElementHandleEvalOnSelectorAllResult> {
@@ -209,7 +209,7 @@ export class ElementHandleDispatcher extends JSHandleDispatcher<FrameDispatcher>
   }
 
   async waitForSelector(params: channels.ElementHandleWaitForSelectorParams, progress: Progress): Promise<channels.ElementHandleWaitForSelectorResult> {
-    return { element: ElementHandleDispatcher.fromNullable(this.parentScope(), await this._elementHandle.waitForSelector(progress, params.selector, params)) };
+    return { element: ElementHandleDispatcher.fromNullable(this.parentScope(), await this._elementHandle.waitForSelector(progress, params, params)) };
   }
 
   private _browserContextDispatcher(): BrowserContextDispatcher {

@@ -21,7 +21,11 @@ APIRequestContext:
   commands:
 
     fetch:
-      title: '{method} "{url}"'
+      title: '{method}'
+      subtitle: '{url}'
+      renderParams:
+      - url
+      - method
       parameters:
         url: string
         encodedParams: string?
@@ -40,7 +44,6 @@ APIRequestContext:
         multipartData:
           type: array?
           items: FormField
-        timeout: float
         failOnStatusCode: boolean?
         ignoreHTTPSErrors: boolean?
         maxRedirects: int?
@@ -65,11 +68,46 @@ APIRequestContext:
           type: array
           items: string
 
+    addCookies:
+      title: Add cookies
+      group: configuration
+      parameters:
+        cookies:
+          type: array
+          items: SetNetworkCookie
+
+    clearCookies:
+      title: Clear cookies
+      group: configuration
+      parameters:
+        name: string?
+        nameRegexSource: string?
+        nameRegexFlags: string?
+        domain: string?
+        domainRegexSource: string?
+        domainRegexFlags: string?
+        path: string?
+        pathRegexSource: string?
+        pathRegexFlags: string?
+
+    cookies:
+      title: Get cookies
+      group: getter
+      parameters:
+        urls:
+          type: array
+          items: string
+      returns:
+        cookies:
+          type: array
+          items: NetworkCookie
+
     storageState:
       title: Get storage state
       group: configuration
       parameters:
         indexedDB: boolean?
+        opfs: boolean?
       returns:
         cookies:
           type: array
@@ -100,3 +138,5 @@ APIResponse:
       items: NameValue
     securityDetails: SecurityDetails?
     serverAddr: RemoteAddr?
+    timing: ResourceTiming?
+    responseEndTiming: float?

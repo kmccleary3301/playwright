@@ -24,6 +24,7 @@ import debug from 'debug';
 import dotenv from 'dotenv';
 import { program } from 'commander';
 import { gracefullyProcessExitDoNotHang } from '@utils/processLauncher';
+import { proxySettingsFromString } from '@utils/network';
 import { ManualPromise } from '@isomorphic/manualPromise';
 import { playwright } from '../inprocess';
 import type { Browser } from '../client/browser';
@@ -38,6 +39,7 @@ export type Options = {
   colorScheme?: string;
   device?: string;
   geolocation?: string;
+  httpCredentials?: string;
   ignoreHttpsErrors?: boolean;
   lang?: string;
   loadStorage?: string;
@@ -91,9 +93,7 @@ async function launchContext(options: Options, extraOptions: LaunchOptions): Pro
   // Proxy
 
   if (options.proxyServer) {
-    launchOptions.proxy = {
-      server: options.proxyServer
-    };
+    launchOptions.proxy = proxySettingsFromString(options.proxyServer);
     if (options.proxyBypass)
       launchOptions.proxy.bypass = options.proxyBypass;
   }
@@ -123,6 +123,18 @@ async function launchContext(options: Options, extraOptions: LaunchOptions): Pro
       throw new Error('Invalid geolocation format, should be "lat,long". For example --geolocation="37.819722,-122.478611"');
     }
     contextOptions.permissions = ['geolocation'];
+  }
+
+  // HTTP credentials
+
+  if (options.httpCredentials) {
+    const separator = options.httpCredentials.indexOf(':');
+    if (separator === -1)
+      throw new Error('Invalid http credentials format: use "username:password", for example --http-credentials="admin:secret"');
+    contextOptions.httpCredentials = {
+      username: options.httpCredentials.substring(0, separator),
+      password: options.httpCredentials.substring(separator + 1),
+    };
   }
 
   // User agent
@@ -244,8 +256,8 @@ export async function codegen(options: Options & { target: string, output?: stri
   });
   const donePromise = new ManualPromise<void>();
   maybeSetupTestHooks(browser, closeBrowser, donePromise);
-  dotenv.config({ path: 'playwright.env' });
-  await context._enableRecorder({
+  dotenv.config({ path: 'playwright.env', quiet: true });
+  await context._showRecorder({
     language,
     launchOptions,
     contextOptions,

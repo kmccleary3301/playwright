@@ -41,6 +41,7 @@ const ignores = [
   "*.js",
   "**/.cache/",
   "**/*.d.ts",
+  "coverage/",
   "index.d.ts",
   "node_modules/",
   "output/",
@@ -48,14 +49,15 @@ const ignores = [
   "examples",
   "packages/*/lib/",
   "packages/playwright-core/bundles/utils/src/third_party/",
+  "packages/utils/webp/webp_codec.js",
   "packages/playwright-core/src/generated/*",
   "packages/playwright-core/src/third_party/",
   "packages/playwright-core/types/*",
-  "packages/playwright-ct-core/src/generated/*",
   "packages/playwright/bundles/expect/third_party/",
+  "packages/playwright-core/src/tools/skills/",
   "packages/html-reporter/bundle.ts",
   "packages/html-reporter/playwright.config.ts",
-  "packages/html-reporter/playwright/*",
+  "packages/html-reporter/tests/*",
   "packages/html-reporter/vite.config.ts",
   "test-results/",
   "tests/assets/",
@@ -236,6 +238,7 @@ const noWebGlobalsRuleList = [
   { name: "cancelIdleCallback", message: "Use InjectedScript.utils.builtins.cancelIdleCallback instead" },
   { name: "Date", message: "Use InjectedScript.utils.builtins.Date instead" },
   { name: "Intl", message: "Use InjectedScript.utils.builtins.Intl instead" },
+  { name: "Temporal", message: "Use InjectedScript.utils.builtins.Temporal instead" },
   { name: "performance", message: "Use InjectedScript.utils.builtins.performance instead" },
 ];
 
@@ -293,6 +296,11 @@ const reactFiles = [
   `packages/web/src/**/*.tsx`,
 ];
 
+const noProcessExitSyntax = {
+  selector: "CallExpression[callee.name='processExit']",
+  message: "Please use gracefullyProcessExitDoNotHang function to exit the process.",
+};
+
 function reactPackageSection(packageName) {
   return {
     files: [
@@ -344,6 +352,10 @@ export default [
         },
         { object: "process", property: "stdout" },
         { object: "process", property: "stderr" },
+      ],
+      "no-restricted-syntax": [
+        "error",
+        noProcessExitSyntax,
       ],
     },
   },
@@ -421,6 +433,7 @@ export default [
       ],
       "no-restricted-syntax": [
         "error",
+        noProcessExitSyntax,
         {
           selector: "TSAsExpression > TSAnyKeyword",
           message: "Avoid 'as any' — risk of accidentally casting to client interfaces. Use a precise type or add an eslint-disable with justification.",
@@ -460,7 +473,7 @@ export default [
   {
     files: [
       "packages/playwright-core/src/client/**/*.ts",
-      "packages/playwright-core/src/protocol/**/*.ts",
+      "packages/protocol/src/**/*.ts",
     ],
     languageOptions: languageOptionsWithTsConfig,
     rules: {

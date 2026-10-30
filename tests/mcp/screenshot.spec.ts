@@ -96,7 +96,7 @@ test('--output-dir should work', async ({ startClient, server }, testInfo) => {
   expect(files[0]).toMatch(/^page-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z\.png$/);
 });
 
-for (const type of ['png', 'jpeg']) {
+for (const type of ['png', 'jpeg', 'webp']) {
   test(`browser_take_screenshot (type: ${type})`, async ({ startClient, server }, testInfo) => {
     const outputDir = testInfo.outputPath('output');
     const { client } = await startClient({
@@ -246,6 +246,31 @@ test('browser_take_screenshot (filename: "output.png")', async ({ client, server
   expect(files[0]).toMatch(/^output\.png$/);
 });
 
+test('browser_take_screenshot (filename: "sub/dir/output.png")', async ({ client, server }, testInfo) => {
+  expect(await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.HELLO_WORLD },
+  })).toHaveResponse({
+    code: expect.stringContaining(`page.goto('http://localhost`),
+  });
+
+  expect(await client.callTool({
+    name: 'browser_take_screenshot',
+    arguments: {
+      filename: 'sub/dir/output.png',
+    },
+  })).toEqual({
+    content: [
+      {
+        text: expect.stringContaining(`output.png`),
+        type: 'text',
+      },
+    ],
+  });
+
+  expect(fs.existsSync(testInfo.outputPath('sub', 'dir', 'output.png'))).toBeTruthy();
+});
+
 test('browser_take_screenshot (imageResponses=omit)', async ({ startClient, server }, testInfo) => {
   const outputDir = testInfo.outputPath('output');
   const { client } = await startClient({
@@ -272,6 +297,44 @@ test('browser_take_screenshot (imageResponses=omit)', async ({ startClient, serv
     content: [
       {
         text: expect.stringContaining(`await page.screenshot`),
+        type: 'text',
+      },
+    ],
+  });
+});
+
+test('browser_take_screenshot (imageResponses=only)', async ({ startClient, server }, testInfo) => {
+  const outputDir = testInfo.outputPath('output');
+  const { client } = await startClient({
+    args: ['--image-responses=only'],
+    config: { outputDir },
+  });
+
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.HELLO_WORLD },
+  });
+
+  expect(await client.callTool({
+    name: 'browser_take_screenshot',
+  })).toEqual({
+    content: [
+      {
+        data: expect.any(String),
+        mimeType: 'image/png',
+        type: 'image',
+      },
+    ],
+  });
+  expect(fs.readdirSync(outputDir).filter(f => f.endsWith('.png'))).toHaveLength(1);
+
+  expect(await client.callTool({
+    name: 'browser_take_screenshot',
+    arguments: { filename: 'screenshot.png' },
+  })).toEqual({
+    content: [
+      {
+        text: expect.stringContaining('[Screenshot of viewport](./screenshot.png)'),
         type: 'text',
       },
     ],
@@ -307,7 +370,7 @@ test('browser_take_screenshot (fullPage: true)', async ({ startClient, server },
   });
 });
 
-test('browser_take_screenshot size cap', async ({ startClient, server, mcpBrowser }, testInfo) => {
+test('browser_take_screenshot preserves image dimensions', async ({ startClient, server, mcpBrowser }, testInfo) => {
   test.skip(!['chrome', 'msedge', 'chromium'].includes(mcpBrowser ?? ''), 'Non-chrome has unusual full page size');
 
   const { client } = await startClient({
@@ -315,8 +378,8 @@ test('browser_take_screenshot size cap', async ({ startClient, server, mcpBrowse
   });
 
   const expectations = [
-    { title: '2000x500', pageWidth: 2000, pageHeight: 500, expectedWidth: 1568, expectedHeight: 720 * 1568 / 2000 | 0 },
-    { title: '2000x2000', pageWidth: 2000, pageHeight: 2000, expectedWidth: 1098, expectedHeight: 1098 },
+    { title: '2000x500', pageWidth: 2000, pageHeight: 500, expectedWidth: 2000, expectedHeight: 720 },
+    { title: '2000x2000', pageWidth: 2000, pageHeight: 2000, expectedWidth: 2000, expectedHeight: 2000 },
     { title: '1280x800', pageWidth: 1280, pageHeight: 800, expectedWidth: 1280, expectedHeight: 800 },
   ];
 

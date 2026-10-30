@@ -20,19 +20,21 @@ import 'playwright-core/lib/bootstrap';
 
 import { libCli, tools } from 'playwright-core/lib/coreBundle';
 import { program } from 'commander';
+import { setBoxedStackPrefixes } from '@utils/stackTrace';
 import { gracefullyProcessExitDoNotHang } from '@utils/processLauncher';
 import { builtInReporters, config, configLoader } from './common';
 import { runTests, clearCache, runTestServerAction } from './cli/testActions';
 import { showReport, mergeReports } from './cli/reportActions';
 import { TestServerBackend, testServerBackendTools } from './mcp/test/testBackend';
 import { ClaudeGenerator, CodexGenerator, OpencodeGenerator, VSCodeGenerator, CopilotGenerator } from './agents/generateAgents';
-import { packageJSON } from './package';
+import { packageRoot, packageJSON } from './package';
 
 export { program };
 
 import type { TraceMode } from '../types/test';
 import type { Command } from 'commander';
 
+setBoxedStackPrefixes([packageRoot]);
 libCli.decorateProgram(program);
 
 function addTestCommand(program: Command) {
@@ -150,7 +152,6 @@ function addTestMCPServerCommand(program: Command) {
       version: packageJSON.version,
       toolSchemas: testServerBackendTools.map(tool => tool.schema),
       create: async () => new TestServerBackend(options.config, { muteConsole: options.port === undefined, headless: options.headless }),
-      disposed: async () => { }
     };
     // TODO: add all options from mcp.startHttpServer.
     await tools.start(factory, { port: options.port === undefined ? undefined : +options.port, host: options.host });
@@ -183,11 +184,29 @@ function addInitAgentsCommand(program: Command) {
   });
 }
 
+function addInitSkillsCommand(program: Command) {
+  const command = program.command('init-skills');
+  command.description('Install Playwright agent skills');
+  const option = command.createOption('--loop <loop>', 'Agentic loop provider');
+  option.choices(['claude', 'agents']);
+  option.default('claude');
+  command.addOption(option);
+  command.action(async opts => {
+    try {
+      await tools.installSkills(tools.allSkills, opts.loop);
+    } catch (e) {
+      console.error(e);
+      gracefullyProcessExitDoNotHang(1);
+    }
+  });
+}
+
 const kTraceModes: TraceMode[] = ['on', 'off', 'on-first-retry', 'on-all-retries', 'retain-on-failure', 'retain-on-first-failure', 'retain-on-failure-and-retries'];
 
 // Note: update docs/src/test-cli-js.md when you update this, program is the source of truth.
 
 const testOptions: [string, { description: string, choices?: string[], preset?: string }][] = [
+  ['--add-reporter <reporter>', { description: `Reporter to add on top of the configured reporters, comma-separated, can be ${builtInReporters.map(name => `"${name}"`).join(', ')} or a path to a reporter module` }],
   /* deprecated */ ['--browser <browser>', { description: `Browser to use for tests, one of "all", "chromium", "firefox" or "webkit" (default: "chromium")` }],
   ['-c, --config <file>', { description: `Configuration file, or a test directory with optional "playwright.config.{m,c}?{js,ts}"` }],
   ['--debug [mode]', { description: `Run tests with Playwright Inspector. Shortcut for "PWDEBUG=1" environment variable and "--timeout=0 --max-failures=1 --headed --workers=1" options`, choices: ['inspector', 'cli'], preset: 'inspector' }],
@@ -216,13 +235,14 @@ const testOptions: [string, { description: string, choices?: string[], preset?: 
   ['--shard <shard>', { description: `Shard tests and execute only the selected shard, specify in the form "current/all", 1-based, for example "3/5"` }],
   ['--test-list <file>', { description: `Path to a file containing a list of tests to run. See https://playwright.dev/docs/test-cli for more details.` }],
   ['--test-list-invert <file>', { description: `Path to a file containing a list of tests to skip. See https://playwright.dev/docs/test-cli for more details.` }],
+  ['--shuffle [seed]', { description: `Schedule test files, and tests in parallel mode, in a random order; pass a seed to reproduce a previous order` }],
   ['--timeout <timeout>', { description: `Specify test timeout threshold in milliseconds, zero for unlimited (default: ${config.defaultTimeout})` }],
   ['--trace <mode>', { description: `Force tracing mode`, choices: kTraceModes as string[] }],
   ['--tsconfig <path>', { description: `Path to a single tsconfig applicable to all imported files (default: look up tsconfig for each imported file separately)` }],
   ['--ui', { description: `Run tests in interactive UI mode` }],
   ['--ui-host <host>', { description: `Host to serve UI on; specifying this option opens UI in a browser tab` }],
   ['--ui-port <port>', { description: `Port to serve UI on, 0 for any free port; specifying this option opens UI in a browser tab` }],
-  ['-u, --update-snapshots [mode]', { description: `Update snapshots with actual results. Running tests without the flag defaults to "missing"`, choices: ['all', 'changed', 'missing', 'none'], preset: 'changed' }],
+  ['-u, --update-snapshots [mode]', { description: `Update snapshots with actual results. Running tests without the flag defaults to "default"`, choices: ['all', 'changed', 'missing', 'none', 'default'], preset: 'changed' }],
   ['--update-source-method <method>', { description: `Chooses the way source is updated (default: "patch")`, choices: ['overwrite', '3way', 'patch'] }],
   ['-j, --workers <workers>', { description: `Number of concurrent workers or percentage of logical CPU cores, use 1 to run in a single worker (default: 50%)` }],
   ['-x', { description: `Stop after the first failure` }],
@@ -235,3 +255,4 @@ addClearCacheCommand(program);
 addTestMCPServerCommand(program);
 addTestServerCommand(program);
 addInitAgentsCommand(program);
+addInitSkillsCommand(program);

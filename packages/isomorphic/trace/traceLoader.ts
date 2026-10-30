@@ -14,8 +14,6 @@
  * limitations under the License.
  */
 
-import { parseClientSideCallMetadata } from './traceUtils';
-
 import { SnapshotStorage } from './snapshotStorage';
 import { TraceModernizer } from './traceModernizer';
 
@@ -48,7 +46,7 @@ export class TraceLoader {
       const match = entryName.match(/(.+)\.trace$/);
       if (match && (!prefix || prefix  === match[1]))
         prefixes.push(match[1] || '');
-      if (entryName.includes('src@'))
+      if (entryName.startsWith('src/') || entryName.includes('src@'))
         hasSource = true;
     }
     if (!prefixes.length)
@@ -72,6 +70,11 @@ export class TraceLoader {
       modernizer.appendTrace(network);
       unzipProgress?.(++done, total);
 
+      const stacks = await this._backend.readText(prefix + '.stacks');
+      if (stacks)
+        modernizer.appendStacks(stacks);
+      unzipProgress?.(++done, total);
+
       contextEntry.actions = modernizer.actions().sort((a1, a2) => a1.startTime - a2.startTime);
 
       if (!backend.isLive()) {
@@ -88,19 +91,11 @@ export class TraceLoader {
         }
       }
 
-      const stacks = await this._backend.readText(prefix + '.stacks');
-      if (stacks) {
-        const callMetadata = parseClientSideCallMetadata(JSON.parse(stacks));
-        for (const action of contextEntry.actions)
-          action.stack = action.stack || callMetadata.get(action.callId);
-      }
-      unzipProgress?.(++done, total);
-
       for (const resource of contextEntry.resources) {
-        if (resource.request.postData?._sha1)
-          this._resourceToContentType.set(resource.request.postData._sha1, stripEncodingFromContentType(resource.request.postData.mimeType));
-        if (resource.response.content?._sha1)
-          this._resourceToContentType.set(resource.response.content._sha1, stripEncodingFromContentType(resource.response.content.mimeType));
+        if (resource.request.postData?._file)
+          this._resourceToContentType.set(resource.request.postData._file, stripEncodingFromContentType(resource.request.postData.mimeType));
+        if (resource.response.content?._file)
+          this._resourceToContentType.set(resource.response.content._file, stripEncodingFromContentType(resource.response.content.mimeType));
       }
 
       this.contextEntries.push(contextEntry);
@@ -113,9 +108,9 @@ export class TraceLoader {
     return this._backend.hasEntry(filename);
   }
 
-  async resourceForSha1(sha1: string): Promise<Blob | undefined> {
-    const blob = await this._backend.readBlob('resources/' + sha1);
-    const contentType = this._resourceToContentType.get(sha1);
+  async resourceEntry(file: string): Promise<Blob | undefined> {
+    const blob = await this._backend.readBlob(file);
+    const contentType = this._resourceToContentType.get(file);
     // "x-unknown" in the har means "no content type".
     if (!blob || contentType === undefined || contentType === 'x-unknown')
       return blob;
@@ -139,6 +134,7 @@ function createEmptyContext(): ContextEntry {
     origin: 'testRunner',
     startTime: Number.MAX_SAFE_INTEGER,
     wallTime: Number.MAX_SAFE_INTEGER,
+    monotonicTime: 0,
     endTime: 0,
     browserName: '',
     options: {
@@ -149,10 +145,13 @@ function createEmptyContext(): ContextEntry {
     pages: [],
     resources: [],
     actions: [],
+    screenshots: [],
+    ariaSnapshots: [],
+    domSnapshots: [],
+    videos: [],
     events: [],
     errors: [],
     stdio: [],
     hasSource: false,
-    contextId: '',
   };
 }

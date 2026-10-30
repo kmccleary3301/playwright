@@ -14,9 +14,7 @@
  * limitations under the License.
  */
 
-import { test, expect, connectAndNavigate } from './extension-fixtures';
-
-test.skip(({ protocolVersion }) => protocolVersion === 1, 'Multi-tab not supported in protocol v1');
+import { test, expect, connectAndNavigate, extensionId } from './extension-fixtures';
 
 test(`browser_tabs new creates a new tab`, async ({ startExtensionClient, server }) => {
   server.setContent('/second.html', '<title>Second</title><body>Second page<body>', 'text/html');
@@ -24,7 +22,7 @@ test(`browser_tabs new creates a new tab`, async ({ startExtensionClient, server
 
   const navigateResponse = await connectAndNavigate(browserContext, client, server.HELLO_WORLD);
   expect(navigateResponse).toHaveResponse({
-    snapshot: expect.stringContaining(`- generic [active] [ref=e1]: Hello, world!`),
+    snapshot: expect.stringContaining(`- generic [active] [ref=f1e1]: Hello, world!`),
   });
 
   const newTabResponse = await client.callTool({
@@ -117,7 +115,7 @@ test(`cmd+click opens new tab visible in tab list`, async ({ startExtensionClien
 
   await client.callTool({
     name: 'browser_click',
-    arguments: { element: 'click me', target: 'e2', modifiers: ['ControlOrMeta'] },
+    arguments: { element: 'click me', target: 'f1e2', modifiers: ['ControlOrMeta'] },
   });
 
   await expect.poll(async () => {
@@ -149,7 +147,7 @@ test(`window.open from tracked tab auto-attaches new tab`, async ({ startExtensi
 
   await client.callTool({
     name: 'browser_click',
-    arguments: { element: 'open', target: 'e2' },
+    arguments: { element: 'open', target: 'f1e2' },
   });
 
   await expect.poll(async () => {
@@ -167,4 +165,49 @@ test(`window.open from tracked tab auto-attaches new tab`, async ({ startExtensi
   expect(listResponse).toHaveResponse({
     result: expect.stringMatching(/- 0:.*\[Opener\].*\n- 1:.*\[Opened\]/),
   });
+});
+
+test(`pending attach is released when the connection closes`, {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/43005' },
+}, async ({ startExtensionClient, server }) => {
+  server.setContent('/second.html', '<title>Second</title><body>Second page</body>', 'text/html');
+  const { browserContext, client } = await startExtensionClient();
+  await connectAndNavigate(browserContext, client, server.HELLO_WORLD);
+
+  const [sw] = browserContext.serviceWorkers();
+  await sw.evaluate(() => {
+    const g = globalThis as any;
+    const originalAttach = g.chrome.debugger.attach.bind(g.chrome.debugger);
+    g.__originalAttach = originalAttach;
+    g.chrome.debugger.attach = (target: any, version: string) => {
+      g.__heldTabId = target.tabId;
+      g.__pendingAttach = new Promise(resolve => g.__releaseAttach = resolve).then(() => originalAttach(target, version));
+      return g.__pendingAttach;
+    };
+  });
+
+  void client.callTool({ name: 'browser_tabs', arguments: { action: 'new', url: server.PREFIX + '/second.html' } }).catch(() => {});
+  await expect.poll(() => sw.evaluate(() => (globalThis as any).__heldTabId)).toBeTruthy();
+
+  await client.close();
+  const statusPage = await browserContext.newPage();
+  await statusPage.goto(`chrome-extension://${extensionId}/status.html`);
+  await expect(statusPage.locator('.client-info')).toHaveCount(0);
+
+  await sw.evaluate(async () => {
+    const g = globalThis as any;
+    g.__releaseAttach();
+    await g.__pendingAttach;
+  });
+  const isAttached = () => sw.evaluate(async () => {
+    const g = globalThis as any;
+    try {
+      await g.__originalAttach({ tabId: g.__heldTabId }, '1.3');
+    } catch {
+      return true;
+    }
+    await g.chrome.debugger.detach({ tabId: g.__heldTabId });
+    return false;
+  });
+  await expect.poll(isAttached).toBe(false);
 });

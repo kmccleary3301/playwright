@@ -22,18 +22,21 @@ import path from 'path';
 
 import { getAsBooleanFromENV, guessClientName } from '@utils/env';
 import { gracefullyProcessExitDoNotHang } from '@utils/processLauncher';
-import { libPath } from '../../package';
 import { startCliDaemonServer } from './daemon';
 import { setupExitWatchdog } from '../mcp/watchdog';
 import { createBrowserWithInfo } from '../mcp/browserFactory';
 import * as configUtils from '../mcp/config';
 import { createClientInfo } from '../cli-client/registry';
+import { installSkills } from '../utils/installSkills';
 import { registry as browserRegistry } from '../../server/registry/index';
+import { processExit } from '../../bootstrap';
 import type { Command } from 'commander';
 
 export function decorateProgram(program: Command) {
   program.argument('[session-name]', 'name of the session to create or connect to', 'default')
       .option('--headed', 'run in headed mode (non-headless)')
+      .option('--device <device>', 'emulate a specific device, for example "iPhone 15"')
+      .option('--mobile', 'emulate a generic mobile device (Pixel 10 for Chromium, iPhone 17 for WebKit)')
       .option('--extension', 'run with the extension')
       .option('--browser <name>', 'browser to use (chromium, chrome, firefox, webkit)')
       .option('--persistent', 'use a persistent browser context')
@@ -41,12 +44,14 @@ export function decorateProgram(program: Command) {
       .option('--config <path>', 'path to the config file; by default uses .playwright/cli.config.json in the project directory and ~/.playwright/cli.config.json as global config')
       .option('--cdp <url>', 'connect to an existing browser via CDP endpoint URL')
       .option('--endpoint <endpoint>', 'attach to a running Playwright browser endpoint')
+      .option('--idle-timeout <timeout>', 'shut the session down after this many milliseconds without a command, defaults to one hour for headless browsers', configUtils.numberParser)
       .option('--init-workspace', 'initialize workspace')
       .option('--init-skills <value>', 'install skills for the given agent type ("claude" or "agents")')
+      .option('--init-skills-global <value>', 'install skills for the given agent type ("claude" or "agents") into the home directory')
 
       .action(async (sessionName: string, options: any) => {
         if (options.initWorkspace) {
-          await initWorkspace(options.initSkills);
+          await initWorkspace(options.initSkills, options.initSkillsGlobal);
           return;
         }
 
@@ -59,14 +64,12 @@ export function decorateProgram(program: Command) {
         };
 
         try {
-          const { browser, browserInfo, canBind, ownership } = await createBrowserWithInfo(mcpConfig, mcpClientInfo, options);
-          if (canBind)
-            await browser.bind(sessionName, { workspaceDir: clientInfo.workspaceDir });
+          const { browser, browserInfo, ownership, idleTimer } = await createBrowserWithInfo(mcpConfig, mcpClientInfo, options, { title: sessionName, workspaceDir: clientInfo.workspaceDir });
           const browserContext = mcpConfig.browser.isolated ? await browser.newContext(mcpConfig.browser.contextOptions) : browser.contexts()[0];
           if (!browserContext)
             throw new Error('Error: unable to connect to a browser that does not have any contexts');
           const persistent = options.persistent || options.profile || mcpConfig.browser.userDataDir ? true : undefined;
-          const socketPath = await startCliDaemonServer(sessionName, browserContext, browserInfo, mcpConfig, clientInfo, mcpClientInfo, { persistent, exitOnClose: true, ownership });
+          const socketPath = await startCliDaemonServer(sessionName, browserContext, browserInfo, mcpConfig, clientInfo, mcpClientInfo, { persistent, exitOnClose: true, ownership, idleTimer });
           console.log(`Daemon listening on ${socketPath}\n`);
         } catch (error) {
           console.log(error);
@@ -83,26 +86,46 @@ function globalConfigFile(): string {
   return path.join(process.env['PWTEST_CLI_GLOBAL_CONFIG'] ?? os.homedir(), '.playwright', 'cli.config.json');
 }
 
-async function initWorkspace(initSkills: string | undefined) {
-  const cwd = process.cwd();
-  const playwrightDir = path.join(cwd, '.playwright');
-  await fs.promises.mkdir(playwrightDir, { recursive: true });
-  console.log(`✅ Workspace initialized at \`${cwd}\`.`);
-
-  if (initSkills) {
-    const skillSourceDir = libPath('tools', 'cli-client', 'skill');
-    const target = initSkills === 'agents' ? 'agents' : 'claude';
-    const skillDestDir = path.join(cwd, `.${target}`, 'skills', 'playwright-cli');
-    if (!fs.existsSync(skillSourceDir)) {
-      console.error('❌ Skills source directory not found:', skillSourceDir);
-      // eslint-disable-next-line no-restricted-properties
-      process.exit(1);
-    }
-    await fs.promises.cp(skillSourceDir, skillDestDir, { recursive: true });
-    console.log(`✅ Skills installed to \`${path.relative(cwd, skillDestDir)}\`.`);
+export async function initWorkspace(initSkills: string | undefined, initSkillsGlobal?: string) {
+  const globalSkills = !!initSkillsGlobal;
+  if (!globalSkills) {
+    const cwd = process.cwd();
+    const playwrightDir = path.join(cwd, '.playwright');
+    await fs.promises.mkdir(playwrightDir, { recursive: true });
+    console.log(`✅ Workspace initialized at \`${cwd}\`.`);
+    await patchGitIgnore(cwd);
   }
 
-  await ensureConfiguredBrowserInstalled();
+  const skills = initSkillsGlobal ?? initSkills;
+  if (skills) {
+    const target = skills === 'agents' ? 'agents' : 'claude';
+    try {
+      await installSkills(['playwright-cli'], target, { global: globalSkills });
+    } catch (error) {
+      console.error('❌', error instanceof Error ? error.message : error);
+      // eslint-disable-next-line no-restricted-syntax
+      processExit(1);
+    }
+  }
+
+  if (!globalSkills)
+    await ensureConfiguredBrowserInstalled();
+}
+
+async function patchGitIgnore(cwd: string) {
+  if (!fs.existsSync(path.join(cwd, '.git')))
+    return;
+  try {
+    const gitIgnorePath = path.join(cwd, '.gitignore');
+    const existing = await fs.promises.readFile(gitIgnorePath, 'utf8').catch(() => '');
+    if (existing.split('\n').some(line => line.trim() === '.playwright-cli/'))
+      return;
+    const separator = existing && !existing.endsWith('\n') ? '\n' : '';
+    await fs.promises.appendFile(gitIgnorePath, separator + '# Playwright CLI output (may contain credentials)\n.playwright-cli/\n');
+    console.log('✅ Added `.playwright-cli/` to `.gitignore`.');
+  } catch (error) {
+    console.log(`⚠️ Failed to update \`.gitignore\`: ${error instanceof Error ? error.message : error}`);
+  }
 }
 
 async function ensureConfiguredBrowserInstalled() {
@@ -139,7 +162,7 @@ async function findOrInstallDefaultBrowser() {
 
 async function resolveAndInstall(nameOrChannel: string) {
   const executables = browserRegistry.resolveBrowsers([nameOrChannel], { shell: 'no' });
-  await browserRegistry.install(executables);
+  await browserRegistry.install(executables, { gc: false });
 }
 
 async function createDefaultConfig(channel: string) {

@@ -131,11 +131,11 @@ function channelsHeader(target) {
 
 import type { Progress } from './progress';
 ` : '') + `
-export type Binary = Buffer;
-
-export interface Channel {
-}
-`];
+import type { Binary, Channel, ${structNames.join(', ')} } from '@protocol/structs';
+export type { Binary, Channel, ${structNames.join(', ')} } from '@protocol/structs';
+` + (target === 'Dispatcher' ? '' : `
+export type TimeoutOptions = { signal: AbortSignal | undefined, timeout: number };
+`)];
 }
 
 const validator_ts = [
@@ -196,6 +196,13 @@ for (const [name, value] of Object.entries(protocol)) {
   if (value.type === 'mixin')
     mixins.set(name, value);
 }
+
+// Struct types (objects and enums) are identical for the client and the server,
+// so they are generated once into a shared structs.d.ts file that both the
+// client and the server channels.d.ts import and re-export.
+const structNames = Object.entries(protocol)
+  .filter(([, value]) => value.type === 'object' || value.type === 'enum')
+  .map(([name]) => name);
 
 const derivedClasses = new Map();
 for (const [name, item] of Object.entries(protocol)) {
@@ -320,15 +327,33 @@ function generateChannels(target) {
             throw new Error(`Method "${className}.${methodName}" must should not specify "group" because it is "internal" in protocol.yml`);
           if (method.group && !['getter', 'configuration', 'route', 'default'].includes(method.group))
             throw new Error(`Unknown group "${method.group}" for method "${className}.${methodName}" in protocol.yml`);
+          if (method.subtitle && method.internal)
+            throw new Error(`Method "${className}.${methodName}" should not specify "subtitle" because it is "internal" in protocol.yml`);
+          if (!method.subtitle && !method.internal && (method.parameters || {}).selector)
+            throw new Error(`Method "${className}.${methodName}" has a "selector" parameter, so it must have an explicit "subtitle" in protocol.yml`);
+          if (method.renderParams) {
+            if (method.internal)
+              throw new Error(`Method "${className}.${methodName}" should not specify "renderParams" because it is "internal" in protocol.yml`);
+            if (!Array.isArray(method.renderParams) || method.renderParams.some(entry => typeof entry !== 'string'))
+              throw new Error(`Method "${className}.${methodName}" must specify "renderParams" as a list of strings in protocol.yml`);
+            for (const entry of method.renderParams) {
+              // Each entry is "[key=]path[:selector]", path root must be a parameter.
+              const paramName = entry.split(':')[0].split('=').pop().split('.')[0];
+              if (!(method.parameters || {})[paramName])
+                throw new Error(`Method "${className}.${methodName}" renderParams entry "${entry}" does not match any parameter in protocol.yml`);
+            }
+          }
           const internalProp = method.internal ? ` internal: ${method.internal},` : '';
           const titleProp = method.title ? ` title: '${method.title}',` : '';
+          const subtitleProp = method.subtitle ? ` subtitle: '${method.subtitle}',` : '';
+          const renderParamsProp = method.renderParams ? ` renderParams: [${method.renderParams.map(entry => `'${entry}'`).join(', ')}],` : '';
           const groupProp = method.group ? ` group: '${method.group}',` : '';
           const slowMoProp = method.flags?.slowMo ? ` slowMo: ${method.flags.slowMo},` : '';
           const snapshotProp = method.flags?.snapshot ? ` snapshot: ${method.flags.snapshot},` : '';
           const pauseProp = method.flags?.pause ? ` pause: ${method.flags.pause},` : '';
           const inputProp = method.flags?.input ? ` input: ${method.flags.input},` : '';
           const isAutoWaitingProp = method.flags?.isAutoWaiting ? ` isAutoWaiting: ${method.flags.isAutoWaiting},` : '';
-          methodMetainfo.push(`['${className + '.' + methodName}', {${internalProp}${titleProp}${slowMoProp}${snapshotProp}${pauseProp}${inputProp}${isAutoWaitingProp}${groupProp} }]`);
+          methodMetainfo.push(`['${className + '.' + methodName}', {${internalProp}${titleProp}${subtitleProp}${renderParamsProp}${slowMoProp}${snapshotProp}${pauseProp}${inputProp}${isAutoWaitingProp}${groupProp} }]`);
         }
 
         const parameters = objectType(method.parameters || {}, '');
@@ -355,8 +380,7 @@ function generateChannels(target) {
           for (const derived of derivedClasses.get(channelName) || [])
             addScheme(`${derived}${titleCase(methodName)}ErrorDetails`, `tType('${errorDetailsName}')`);
         }
-        const secondParam = isDispatcher ? `, progress: Progress` : '';
-        channels_ts.push(`  ${methodName}(params${method.parameters || isDispatcher ? '' : '?'}: ${paramsName}${secondParam}): Promise<${resultName}>;`);
+        channels_ts.push(`  ${methodName}(params: ${paramsName}, ${isDispatcher ? `progress: Progress` : `options: TimeoutOptions`}): Promise<${resultName}>;`);
       }
 
       channels_ts.push(`}`);
@@ -371,12 +395,8 @@ function generateChannels(target) {
 
     } else if (item.type === 'object') {
       const inner = objectType(item.properties, '');
-      channels_ts.push(`export type ${name} = ${inner.ts};`);
-      channels_ts.push(``);
       addScheme(name, inner.scheme);
     } else if (item.type === 'enum') {
-      const ts = item.literals.map(literal => `'${literal}'`).join(' | ');
-      channels_ts.push(`export type ${name} = ${ts};`)
       addScheme(name, `tEnum([${item.literals.map(literal => `'${literal}'`).join(', ')}])`);
     }
   }
@@ -384,9 +404,53 @@ function generateChannels(target) {
   return channels_ts;
 }
 
+function structsHeader() {
+  return `/**
+ * Copyright (c) Microsoft Corporation.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// This file is generated by ${path.basename(__filename).split(path.sep).join(path.posix.sep)}, do not edit manually.
+
+export type Binary = Buffer;
+
+export interface Channel {
+}
+`;
+}
+
+function generateStructs() {
+  const structs_ts = [structsHeader()];
+  for (const [name, item] of Object.entries(protocol)) {
+    if (item.type === 'object') {
+      const inner = objectType(item.properties, '');
+      structs_ts.push(`export type ${name} = ${inner.ts};`);
+      structs_ts.push(``);
+    } else if (item.type === 'enum') {
+      const ts = item.literals.map(literal => `'${literal}'`).join(' | ');
+      structs_ts.push(`export type ${name} = ${ts};`);
+      structs_ts.push(``);
+    }
+  }
+  return structs_ts;
+}
+
+const structs_ts = generateStructs();
+
 const client_channels_ts = generateChannels('Channel');
 
-metainfo_ts.push(`export type MethodMetainfo = { internal?: boolean, title?: string, slowMo?: boolean, snapshot?: boolean, pause?: boolean, isAutoWaiting?: boolean, input?: boolean, group?: string };
+metainfo_ts.push(`export type MethodMetainfo = { internal?: boolean, title?: string, subtitle?: string, renderParams?: string[], slowMo?: boolean, snapshot?: boolean, pause?: boolean, isAutoWaiting?: boolean, input?: boolean, group?: string };
 
 export const methodMetainfo = new Map<string, MethodMetainfo>([
   ${methodMetainfo.join(`,\n  `)}
@@ -416,8 +480,9 @@ function writeFile(filePath, content) {
   fs.writeFileSync(filePath, content, 'utf8');
 }
 
+writeFile(path.join(__dirname, '..', 'packages', 'protocol', 'src', 'structs.d.ts'), structs_ts.join('\n') + '\n');
 writeFile(path.join(__dirname, '..', 'packages', 'playwright-core', 'src', 'client', 'channels.d.ts'), client_channels_ts.join('\n') + '\n');
 writeFile(path.join(__dirname, '..', 'packages', 'playwright-core', 'src', 'server', 'channels.d.ts'), server_channels_ts.join('\n') + '\n');
 writeFile(path.join(__dirname, '..', 'packages', 'isomorphic', 'protocolMetainfo.ts'), metainfoContent);
-writeFile(path.join(__dirname, '..', 'packages', 'playwright-core', 'src', 'protocol', 'validator.ts'), validatorContent);
+writeFile(path.join(__dirname, '..', 'packages', 'protocol', 'src', 'validator.ts'), validatorContent);
 process.exit(hasChanges ? 1 : 0);

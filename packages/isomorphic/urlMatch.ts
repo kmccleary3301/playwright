@@ -147,6 +147,8 @@ function deserializeURLPattern(v: ReturnType<typeof serializeURLPattern>): URLPa
   if (typeof globalThis.URLPattern !== 'function')
     return () => true;
 
+  // URLPattern does not expose ignoreCase, so match case-insensitively on the server
+  // to avoid false negatives. The client filters again with the original pattern.
   // @ts-ignore URLPattern is not in @types/node yet
   // eslint-disable-next-line no-restricted-globals
   return new globalThis.URLPattern({
@@ -158,7 +160,7 @@ function deserializeURLPattern(v: ReturnType<typeof serializeURLPattern>): URLPa
     protocol: v.protocol,
     search: v.search,
     username: v.username,
-  });
+  }, { ignoreCase: true });
 }
 
 export function deserializeURLMatch(match: { glob?: string, regexSource?: string, regexFlags?: string, urlPattern?: ReturnType<typeof serializeURLPattern> }): URLMatch {
@@ -202,9 +204,10 @@ export function resolveGlobToRegexPattern(baseURL: string | undefined, glob: str
 }
 
 function toWebSocketBaseUrl(baseURL: string | undefined) {
-  // Allow http(s) baseURL to match ws(s) urls.
-  if (baseURL && /^https?:\/\//.test(baseURL))
-    baseURL = baseURL.replace(/^http/, 'ws');
+  // Allow http(s) baseURL to match ws(s) urls. Schemes are case-insensitive,
+  // same as elsewhere in this file, so 'HTTP://...' should be rewritten too.
+  if (baseURL && /^https?:\/\//i.test(baseURL))
+    baseURL = baseURL.replace(/^https?/i, scheme => scheme.toLowerCase() === 'https' ? 'wss' : 'ws');
   return baseURL;
 }
 
@@ -238,6 +241,11 @@ function resolveGlobBase(baseURL: string | undefined, match: string): string {
         // Preserve explicit schema as is as it may affect trailing slashes after domain.
         return token;
       }
+      // Components without glob metacharacters are literal, so let them round-trip
+      // through new URL() to preserve normalization (default ports such as :80/:443,
+      // percent-encoding, IDN hosts). Only opaque tokens defeat that normalization.
+      if (!/[*?{}\\]/.test(token))
+        return token;
       const questionIndex = token.indexOf('?');
       if (questionIndex === -1)
         return mapToken(token, `$_${index}_$`);

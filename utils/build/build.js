@@ -22,6 +22,7 @@ const chokidar = require('chokidar');
 const fs = require('fs');
 const { workspace } = require('../workspace');
 const { build, context } = require('esbuild');
+const { minimatch } = require('minimatch');
 
 /**
  * @typedef {{
@@ -77,6 +78,43 @@ const ROOT = path.join(__dirname, '..', '..');
  */
 function filePath(relative) {
   return path.join(ROOT, ...relative.split('/'));
+}
+
+/**
+ * @param {string} p
+ * @returns {string}
+ */
+function toPosixPath(p) {
+  return p.split(path.sep).join('/');
+}
+
+/**
+ * Chokidar v4 dropped glob support: watch the static directory prefix of a
+ * glob instead, and filter emitted paths with `pathMatcher`.
+ * @param {string} pattern
+ * @returns {string}
+ */
+function globBase(pattern) {
+  const magicIndex = pattern.search(/[*?{[]/);
+  if (magicIndex === -1)
+    return pattern;
+  return pattern.slice(0, pattern.lastIndexOf(path.sep, magicIndex));
+}
+
+/**
+ * @param {string[]} patterns absolute files, directories or globs
+ * @returns {(file: string) => boolean}
+ */
+function pathMatcher(patterns) {
+  const posixPatterns = patterns.map(toPosixPath);
+  return file => {
+    const posixFile = toPosixPath(file);
+    return posixPatterns.some(pattern => {
+      if (pattern.search(/[*?{[]/) === -1)
+        return posixFile === pattern || posixFile.startsWith(pattern + '/');
+      return minimatch(posixFile, pattern, { dot: true });
+    });
+  };
 }
 
 /**
@@ -185,14 +223,16 @@ async function runWatch() {
         clearTimeout(timeout);
       timeout = setTimeout(callback, 500);
     };
-    chokidar.watch([...paths, ...mustExist, onChange.script].filter(Boolean).map(filePath)).on('all', reschedule);
+    chokidar.watch([...paths, ...mustExist, onChange.script].filter(Boolean).map(filePath).map(globBase)).on('all', reschedule);
     callback();
   }
 
   for (const { files, from, to, ignored } of copyFiles) {
-    const watcher = chokidar.watch([filePath(files)], { ignored });
+    const matches = pathMatcher([filePath(files)]);
+    const watcher = chokidar.watch(globBase(filePath(files)), { ignored: pathMatcher(ignored || []) });
     watcher.on('all', (event, file) => {
-      copyFile(file, from, to);
+      if ((event === 'add' || event === 'change') && matches(file))
+        copyFile(file, from, to);
     });
   }
 
@@ -211,11 +251,11 @@ async function runWatch() {
 
 async function runBuild() {
   for (const { files, from, to, ignored } of copyFiles) {
-    const watcher = chokidar.watch([filePath(files)], {
-      ignored
-    });
+    const matches = pathMatcher([filePath(files)]);
+    const watcher = chokidar.watch(globBase(filePath(files)), { ignored: pathMatcher(ignored || []) });
     watcher.on('add', file => {
-      copyFile(file, from, to);
+      if (matches(file))
+        copyFile(file, from, to);
     });
     await new Promise(x => watcher.once('ready', x));
     watcher.close();
@@ -291,6 +331,7 @@ class EsbuildStep extends Step {
       sourcemap: withSourceMaps ? 'linked' : false,
       platform: 'node',
       format: 'cjs',
+      target: 'node20',
       ...options,
     };
     this._watchPaths = watchPaths;
@@ -329,9 +370,14 @@ class EsbuildStep extends Step {
     this._context = await context(this._options);
     disposables.push(() => this._context?.dispose());
 
-    const watcher = chokidar.watch([...this._options.entryPoints, ...(this._watchPaths || [])]);
+    const watchPaths = [...this._options.entryPoints, ...(this._watchPaths || [])];
+    const matches = pathMatcher(watchPaths);
+    const watcher = chokidar.watch([...new Set(watchPaths.map(globBase))]);
     await new Promise(x => watcher.once('ready', x));
-    watcher.on('all', () => this._rebuild());
+    watcher.on('all', (event, file) => {
+      if (matches(file))
+        this._rebuild();
+    });
 
     await this._rebuild();
     console.log('==== Esbuild watching:', this._relativeEntryPoints().join(', '), `(started in ${Date.now() - start}ms)`);
@@ -579,6 +625,7 @@ for (const pkg of workspace.packages()) {
       'inspector': clientNodeStub('inspector'),
       'async_hooks': clientNodeStub('async_hooks'),
       'events': clientNodeStub('events'),
+      'crypto': clientNodeStub('crypto'),
       // Vendored npm dep used for terminal colors; no-op in the browser.
       'colors/safe': clientNodeStub('colors'),
     },
@@ -589,6 +636,8 @@ for (const pkg of workspace.packages()) {
     filePath('packages/playwright-client/src'),
     filePath('packages/playwright-core/src/client'),
     filePath('packages/isomorphic'),
+    filePath('packages/utils'),
+    filePath('packages/protocol/src'),
   ]));
 }
 
@@ -619,17 +668,17 @@ steps.push(new EsbuildStep({
   bundle: true,
   entryPoints: [filePath('packages/playwright-core/src/serverRegistry.js')],
   outfile: filePath('packages/playwright-core/lib/serverRegistry.js'),
-  external: ['fsevents'],
 }, [filePath('packages/playwright-core/src/*')]));
 
 const playwrightCoreSrc = filePath('packages/playwright-core/src');
+const commonUtilsSrc = [filePath('packages/protocol/src'), filePath('packages/utils'), filePath('packages/isomorphic')];
 
 // playwright-core/lib/utilsBundle.js — bundled npm utilities barrel.
 steps.push(new EsbuildStep({
   bundle: true,
   entryPoints: [filePath('packages/playwright-core/src/utilsBundle.ts')],
   outfile: filePath('packages/playwright-core/lib/utilsBundle.js'),
-  external: ['fsevents', 'express', '@anthropic-ai/sdk'],
+  external: ['express', '@anthropic-ai/sdk'],
   alias: {
     'raw-body': filePath('utils/build/raw-body.ts'),
   },
@@ -661,8 +710,12 @@ steps.push(new EsbuildStep({
     name: 'externalize-utilsBundle',
     setup: build => build.onResolve({ filter: /utilsBundle/ },
         () => ({ path: './utilsBundle', external: true })),
+  }, {
+    name: 'externalize-bootstrap',
+    setup: build => build.onResolve({ filter: /\/bootstrap$/ },
+        args => path.resolve(args.resolveDir, args.path) === filePath('packages/playwright-core/src/bootstrap') ? { path: './bootstrap', external: true } : undefined),
   }, dynamicImportToRequirePlugin],
-}, [playwrightCoreSrc]));
+}, [playwrightCoreSrc, ...commonUtilsSrc, filePath('packages/injected')]));
 
 function assertCoreBundleHasNoNodeModules() {
   const bundlePath = filePath('packages/playwright-core/lib/coreBundle.js');
@@ -707,7 +760,7 @@ steps.push(new CustomCallbackStep(assertCoreBundleHasNoNodeModules));
       '../transform/esmLoader.js',
     ],
     plugins: [],
-  }, [playwrightSrc]));
+  }, [playwrightSrc, ...commonUtilsSrc]));
 }
 
 // Build playwright entry points (per-file), excluding matchers/* and
@@ -734,7 +787,7 @@ steps.push(new EsbuildStep({
     '../package',
   ],
   plugins: [dynamicImportToRequirePlugin],
-}, [filePath('packages/playwright/src')]));
+}, [filePath('packages/playwright/src'), ...commonUtilsSrc]));
 
 // playwright/lib/matchers/expect.js — bundled jest expect facade.
 steps.push(new EsbuildStep({
@@ -749,7 +802,7 @@ steps.push(new EsbuildStep({
     '../babelBundle',
   ],
   plugins: [dynamicImportToRequirePlugin],
-}, [filePath('packages/playwright/src')]));
+}, [filePath('packages/playwright/src'), ...commonUtilsSrc]));
 
 // playwright/lib/common/index.js — bundled common barrel.
 steps.push(new EsbuildStep({
@@ -767,7 +820,7 @@ steps.push(new EsbuildStep({
     '../transform/esmLoader.js',
   ],
   plugins: [dynamicImportToRequirePlugin],
-}, [filePath('packages/playwright/src')]));
+}, [filePath('packages/playwright/src'), ...commonUtilsSrc]));
 
 // playwright/lib/runner/index.js — bundled runner barrel.
 steps.push(new EsbuildStep({
@@ -793,7 +846,7 @@ steps.push(new EsbuildStep({
     __PW_HMR__: String(!!watchMode),
   },
   plugins: [dynamicImportToRequirePlugin],
-}, [filePath('packages/playwright/src')]));
+}, [filePath('packages/playwright/src'), ...commonUtilsSrc]));
 
 // playwright/lib/isomorphic/index.js — bundled isomorphic barrel.
 steps.push(new EsbuildStep({
@@ -822,7 +875,7 @@ steps.push(new EsbuildStep({
     '../transform/esmLoader',
   ],
   plugins: [dynamicImportToRequirePlugin],
-}, [filePath('packages/playwright/src')]));
+}, [filePath('packages/playwright/src'), ...commonUtilsSrc]));
 
 // playwright/lib/worker/workerProcessEntry.js — bundled worker process
 // entry. Output sits at the same depth as the source so '../X' externals
@@ -842,7 +895,7 @@ steps.push(new EsbuildStep({
     '../transform/esmLoader',
   ],
   plugins: [dynamicImportToRequirePlugin],
-}, [filePath('packages/playwright/src')]));
+}, [filePath('packages/playwright/src'), ...commonUtilsSrc]));
 
 // Build the Electron preload loader as a standalone CJS file. It runs inside
 // the Electron process (via `electron -r loader.js`) and must not depend on
@@ -941,6 +994,7 @@ steps.push(new ProgramStep({
 // Generate CLI help.
 onChanges.push({
   inputs: [
+    'packages/playwright-core/src/tools/cli-daemon/command.ts',
     'packages/playwright-core/src/tools/cli-daemon/commands.ts',
     'packages/playwright-core/src/tools/cli-daemon/helpGenerator.ts',
     'utils/generate_cli_help.js',
@@ -953,7 +1007,6 @@ onChanges.push({
   inputs: [
     'packages/injected/src/**',
     'packages/playwright-core/src/third_party/**',
-    'packages/playwright-ct-core/src/injected/**',
     'packages/isomorphic/**',
     'utils/generate_injected_builtins.js',
     'utils/generate_injected.js',
@@ -984,7 +1037,7 @@ onChanges.push({
     'packages/playwright-core/src/server/chromium/protocol.d.ts',
   ],
   mustExist: [
-    'packages/playwright-core/lib/server/deviceDescriptorsSource.json',
+    'packages/isomorphic/deviceDescriptorsSource.json',
   ],
   script: 'utils/generate_types/index.js',
 });
@@ -1023,6 +1076,21 @@ copyFiles.push({
   to: 'packages/playwright-core/lib',
 });
 
+// WebP codec: ship the WASM binary and its third-party license into lib/ next
+// to coreBundle.js, where @utils/webp/webp reads them at runtime. The .js glue
+// is inlined into coreBundle; the .wasm and .LICENSE ship as assets. The
+// license is generated from the pinned libwebp source by utils/libwebp-wasm/build.sh.
+copyFiles.push({
+  files: 'packages/utils/webp/webp_codec.wasm',
+  from: 'packages/utils/webp',
+  to: 'packages/playwright-core/lib',
+});
+copyFiles.push({
+  files: 'packages/utils/webp/webp_codec.LICENSE',
+  from: 'packages/utils/webp',
+  to: 'packages/playwright-core/lib',
+});
+
 
 copyFiles.push({
   files: 'packages/playwright/src/agents/*.md',
@@ -1036,14 +1104,9 @@ copyFiles.push({
   to: 'packages/playwright/lib',
 });
 
+// Agent skills ship as-is: SKILL.md, referenced docs and templates.
 copyFiles.push({
-  files: 'packages/playwright-core/src/tools/cli-client/skill/**/*.md',
-  from: 'packages/playwright-core/src',
-  to: 'packages/playwright-core/lib',
-});
-
-copyFiles.push({
-  files: 'packages/playwright-core/src/tools/trace/SKILL.md',
+  files: 'packages/playwright-core/src/tools/skills/**/*',
   from: 'packages/playwright-core/src',
   to: 'packages/playwright-core/lib',
 });

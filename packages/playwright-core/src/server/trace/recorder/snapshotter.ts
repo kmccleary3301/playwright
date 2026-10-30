@@ -28,7 +28,7 @@ import type { SnapshotData } from './snapshotterInjected';
 import type { RegisteredListener } from '@utils/eventsHelper';
 import type { Frame } from '../../frames';
 import type { InitScript } from '../../page';
-import type { FrameSnapshot } from '@trace/snapshot';
+import type { ActionPhase, FrameSnapshot } from '@isomorphic/trace/trace';
 import type { Progress } from '../../progress';
 
 export type SnapshotterBlob = {
@@ -37,7 +37,7 @@ export type SnapshotterBlob = {
 };
 
 export interface SnapshotterDelegate {
-  onSnapshotterBlob(blob: SnapshotterBlob): void;
+  onSnapshotterBlob(blob: SnapshotterBlob): string;
   onFrameSnapshot(snapshot: FrameSnapshot): void;
 }
 
@@ -120,7 +120,7 @@ export class Snapshotter {
     }
   }
 
-  async captureSnapshot(page: Page, callId: string, snapshotName: string, resetTargets: boolean): Promise<void> {
+  async captureSnapshot(page: Page, callId: string, phase: ActionPhase, resetTargets: boolean): Promise<void> {
     // In each frame, in a non-stalling manner, capture the snapshots.
     const snapshots = page.frames().map(async frame => {
       const data = await this._captureFrameSnapshot(frame, resetTargets);
@@ -130,7 +130,7 @@ export class Snapshotter {
 
       const snapshot: FrameSnapshot = {
         callId,
-        snapshotName,
+        phase,
         pageId: page.guid,
         frameId: frame.guid,
         frameUrl: data.url,
@@ -147,8 +147,8 @@ export class Snapshotter {
         if (typeof content === 'string') {
           const buffer = Buffer.from(content);
           const sha1 = calculateSha1(buffer) + '.' + (mime.getExtension(contentType) || 'dat');
-          this._delegate.onSnapshotterBlob({ sha1, buffer });
-          snapshot.resourceOverrides.push({ url, sha1 });
+          const file = this._delegate.onSnapshotterBlob({ sha1, buffer });
+          snapshot.resourceOverrides.push({ url, file });
         } else {
           snapshot.resourceOverrides.push({ url, ref: content });
         }

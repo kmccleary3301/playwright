@@ -22,8 +22,11 @@ Tracing:
       group: configuration
       parameters:
         name: string?
-        snapshots: boolean?
-        screenshots: boolean?
+        snapshotDom: boolean?
+        snapshotAria: boolean?
+        snapshotScreen: boolean?
+        screencast: boolean?
+        coverage: boolean?
         live: boolean?
 
     tracingStartChunk:
@@ -37,6 +40,8 @@ Tracing:
 
     tracingGroup:
       title: Trace "{name}"
+      renderParams:
+      - name
       parameters:
         name: string
         location:

@@ -39,18 +39,20 @@ export class ProgressController {
   private _donePromise = new ManualPromise<void>();
   private _state: 'before' | 'running' | { error: Error } | 'finished' = 'before';
   private _onCallLog?: (message: string) => void;
+  private _pendingAbortError?: Error;
 
   readonly metadata: CallMetadata;
   private _controller: AbortController;
 
-  constructor(metadata?: CallMetadata, onCallLog?: (message: string) => void) {
+  constructor(metadata?: CallMetadata, onCallLog?: (message: string) => void, pendingAbortError?: Error) {
     this.metadata = metadata || { id: '', startTime: 0, endTime: 0, type: 'Internal', method: '', params: {}, log: [], internal: true };
     this._onCallLog = onCallLog;
+    this._pendingAbortError = pendingAbortError;
     this._forceAbortPromise.catch(e => null);  // Prevent unhandled promise rejection.
     this._controller = new AbortController();
   }
 
-  static createForSdkObject(sdkObject: SdkObject, callMetadata: CallMetadata) {
+  static createForSdkObject(sdkObject: SdkObject, callMetadata: CallMetadata, pendingAbortError?: Error) {
     const logName = sdkObject.logName || 'api';
     return new ProgressController(callMetadata, message => {
       // Note: "attribution.playwright" is undefined in DebugController. Unfortunate!
@@ -58,16 +60,21 @@ export class ProgressController {
         return;
       debugLogger.log(logName, message);
       sdkObject.instrumentation.onCallLog(sdkObject, callMetadata, logName, message);
-    });
+    }, pendingAbortError);
   }
 
-
   async abort(error: Error) {
+    const logMessage = `operation was aborted: ${error.message}`;
     if (this._state === 'running') {
+      this.metadata.log.push(logMessage);
       (error as any)[kAbortErrorSymbol] = true;
       this._state = { error };
       this._forceAbortPromise.reject(error);
       this._controller.abort(error);
+    } else if (this._state === 'before') {
+      this.metadata.log.push(logMessage);
+      (error as any)[kAbortErrorSymbol] = true;
+      this._pendingAbortError = error;
     }
     await this._donePromise;
   }
@@ -76,6 +83,7 @@ export class ProgressController {
     const deadline = timeout ? monotonicTime() + timeout : 0;
     assert(this._state === 'before');
     this._state = 'running';
+
     let timer: NodeJS.Timeout | undefined;
 
     let outerProgress: string | undefined;
@@ -139,6 +147,8 @@ export class ProgressController {
     }
 
     try {
+      if (this._pendingAbortError)
+        throw this._pendingAbortError;
       const result = await task(progress);
       this._state = 'finished';
       return result;

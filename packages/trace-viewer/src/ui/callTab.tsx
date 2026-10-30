@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import type { ActionTraceEvent, SerializedValue } from '@trace/trace';
+import type { ActionTraceEvent, SerializedValue } from '@isomorphic/trace/trace';
 import { clsx } from '@web/uiUtils';
 import { msToString } from '@isomorphic/formatUtils';
 import * as React from 'react';
@@ -23,11 +23,11 @@ import { CopyToClipboard } from './copyToClipboard';
 import { asLocator } from '@isomorphic/locatorGenerators';
 import type { Language } from '@isomorphic/locatorGenerators';
 import { PlaceholderPanel } from './placeholderPanel';
-import type { ActionTraceEventInContext } from '@isomorphic/trace/traceModel';
+import type { ActionEntry } from '@isomorphic/trace/entries';
 import { renderTitleForCall } from './actionList';
 
 export const CallTab: React.FunctionComponent<{
-  action: ActionTraceEventInContext | undefined,
+  action: ActionEntry | undefined,
   startTimeOffset: number,
   sdkLanguage: Language | undefined,
 }> = ({ action, startTimeOffset, sdkLanguage }) => {
@@ -41,11 +41,11 @@ export const CallTab: React.FunctionComponent<{
   const startTimeMillis = action.startTime - startTimeOffset;
   const startTime = msToString(startTimeMillis);
 
-  const { title } = renderTitleForCall(action);
+  const { title, subtitle } = renderTitleForCall(action, sdkLanguage);
 
   return (
     <div className='call-tab'>
-      <div className='call-line'>{title}</div>
+      <div className='call-line'>{subtitle ? `${title} ${subtitle}` : title}</div>
       <div className='call-section'>Time</div>
       {renderProperty({ name: 'start', type: 'literal', text: startTime })}
       {renderProperty({ name: 'duration', type: 'literal', text: renderDuration(action) })}
@@ -73,7 +73,7 @@ type Property = {
   text: string;
 };
 
-function renderDuration(action: ActionTraceEventInContext): string {
+function renderDuration(action: ActionEntry): string {
   if (action.endTime)
     return msToString(action.endTime - action.startTime);
   else if (!!action.error)

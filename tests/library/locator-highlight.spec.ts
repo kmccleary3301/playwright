@@ -86,6 +86,24 @@ test('hideHighlight removes a styled highlight', async ({ browser, server }) => 
   await context.close();
 });
 
+test('highlight should survive navigation', async ({ browser, server }) => {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.setContent(`<button onclick="console.log(1)">Clicker</button>`);
+
+  await page.getByRole('button').highlight();
+  await expect(page.locator('x-pw-highlight')).toHaveCount(1);
+
+  // Highlights are resolved again after the navigation.
+  await page.goto(server.PREFIX + '/input/button.html');
+  await expect(page.locator('x-pw-highlight')).toHaveCount(1);
+
+  await page.hideHighlight();
+  await expect(page.locator('x-pw-highlight')).toHaveCount(0);
+
+  await context.close();
+});
+
 test('Page.hideHighlight clears all locator highlights', async ({ browser, server }) => {
   const context = await browser.newContext();
   const page = await context.newPage();
@@ -97,6 +115,60 @@ test('Page.hideHighlight clears all locator highlights', async ({ browser, serve
 
   await page.hideHighlight();
   await expect(page.locator('x-pw-highlight')).toHaveCount(0);
+
+  await context.close();
+});
+
+test('highlight should work with a custom selector engine that runs in the main world', async ({ playwright, browser }) => {
+  // Engines registered without "contentScript" run in the main world and can see page globals.
+  const createEngine = () => ({
+    query(root, selector) {
+      return window['__engineEnabled'] ? root.querySelector(selector) : null;
+    },
+    queryAll(root, selector) {
+      return window['__engineEnabled'] ? Array.from(root.querySelectorAll(selector)) : [];
+    },
+  });
+  await playwright.selectors.register('highlight-tag', createEngine);
+
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.setContent('<button>Button</button>');
+  await page.evaluate(() => window['__engineEnabled'] = true);
+
+  const button = page.locator('highlight-tag=button');
+  await button.highlight();
+  await expect(page.locator('x-pw-highlight')).toHaveCount(1);
+
+  await button.hideHighlight();
+  await expect(page.locator('x-pw-highlight')).toHaveCount(0);
+
+  await button.highlight();
+  await expect(page.locator('x-pw-highlight')).toHaveCount(1);
+
+  await page.hideHighlight();
+  await expect(page.locator('x-pw-highlight')).toHaveCount(0);
+
+  await context.close();
+});
+
+test('highlight should resolve relative to the frame of the locator', async ({ browser }) => {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.setContent('<iframe name="frame" srcdoc="<button>foo</button>"></iframe><button>bar</button>');
+  const frame = page.frame('frame')!;
+
+  await page.locator('button').highlight();
+  await frame.locator('button').highlight();
+  await expect(page.locator('x-pw-highlight')).toHaveCount(1);
+  await expect(frame.locator('x-pw-highlight')).toHaveCount(1);
+
+  await page.locator('button').hideHighlight();
+  await expect(page.locator('x-pw-highlight')).toHaveCount(0);
+  await expect(frame.locator('x-pw-highlight')).toHaveCount(1);
+
+  await frame.locator('button').hideHighlight();
+  await expect(frame.locator('x-pw-highlight')).toHaveCount(0);
 
   await context.close();
 });

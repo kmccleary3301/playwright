@@ -17,7 +17,8 @@
 
 import { eventsHelper } from '@utils/eventsHelper';
 import { assert } from '@isomorphic/assert';
-import { headersArrayToObject, headersObjectToArray } from '@isomorphic/headers';
+import { headersArrayToObject, headersObjectToArray, splitSetCookieHeader } from '@isomorphic/headers';
+import { findMatchingHttpCredentials } from '../browserContext';
 import { helper } from '../helper';
 import * as network from '../network';
 import { isProtocolError, isSessionClosedError } from '../protocolError';
@@ -29,6 +30,7 @@ import type * as contexts from '../browserContext';
 import type * as frames from '../frames';
 import type { Page } from '../page';
 import type * as types from '../types';
+import type { HttpCredentials } from '@protocol/structs';
 import type { CRPage } from './crPage';
 import type { CRServiceWorker } from './crServiceWorker';
 
@@ -45,7 +47,7 @@ export class CRNetworkManager {
   private _serviceWorker: CRServiceWorker | null;
   private _requestIdToRequest = new Map<string, InterceptableRequest>();
   private _requestIdToRequestWillBeSentEvent = new Map<string, { sessionInfo: SessionInfo, event: Protocol.Network.requestWillBeSentPayload }>();
-  private _credentials: {origin?: string, username: string, password: string} | null = null;
+  private _credentials: HttpCredentials[] | null = null;
   private _attemptedAuthentications = new Set<string>();
   private _userRequestInterceptionEnabled = false;
   private _protocolRequestInterceptionEnabled = false;
@@ -78,7 +80,11 @@ export class CRNetworkManager {
       sessionInfo.eventListeners.push(...[
         eventsHelper.addEventListener(session, 'Network.webSocketCreated', e => this._page!.frameManager.onWebSocketCreated(e.requestId, e.url)),
         eventsHelper.addEventListener(session, 'Network.webSocketWillSendHandshakeRequest', event => this._onWebSocketWillSendHandshakeRequest(event)),
-        eventsHelper.addEventListener(session, 'Network.webSocketHandshakeResponseReceived', e => this._page!.frameManager.onWebSocketResponse(e.requestId, e.response.status, e.response.statusText, headersObjectToArray(e.response.headers, '\n'))),
+        eventsHelper.addEventListener(session, 'Network.webSocketHandshakeResponseReceived', e => this._page!.frameManager.onWebSocketResponse(e.requestId, {
+          status: e.response.status,
+          statusText: e.response.statusText,
+          headers: headersObjectToArray(e.response.headers, '\n'),
+        })),
         eventsHelper.addEventListener(session, 'Network.webSocketFrameSent', e => e.response.payloadData && this._page!.frameManager.onWebSocketFrameSent(e.requestId, e.response.opcode, e.response.payloadData, this._timestampToWallTimeMsForWebSocket(e.requestId, e.timestamp))),
         eventsHelper.addEventListener(session, 'Network.webSocketFrameReceived', e => e.response.payloadData && this._page!.frameManager.webSocketFrameReceived(e.requestId, e.response.opcode, e.response.payloadData, this._timestampToWallTimeMsForWebSocket(e.requestId, e.timestamp))),
         eventsHelper.addEventListener(session, 'Network.webSocketClosed', event => this._onWebSocketClosed(event)),
@@ -116,7 +122,7 @@ export class CRNetworkManager {
     }));
   }
 
-  async authenticate(credentials: types.Credentials | null) {
+  async authenticate(credentials: HttpCredentials[] | null) {
     this._credentials = credentials;
     await this._updateProtocolRequestInterception();
   }
@@ -149,7 +155,7 @@ export class CRNetworkManager {
   }
 
   async _updateProtocolRequestInterception() {
-    const enabled = this._userRequestInterceptionEnabled || !!this._credentials;
+    const enabled = this._userRequestInterceptionEnabled || !!this._credentials?.length;
     if (enabled === this._protocolRequestInterceptionEnabled)
       return;
     this._protocolRequestInterceptionEnabled = enabled;
@@ -221,24 +227,18 @@ export class CRNetworkManager {
 
   _onAuthRequired(sessionInfo: SessionInfo, event: Protocol.Fetch.authRequiredPayload) {
     let response: 'Default' | 'CancelAuth' | 'ProvideCredentials' = 'Default';
-    const shouldProvideCredentials = this._shouldProvideCredentials(event.request.url);
+    const credentials = findMatchingHttpCredentials(this._credentials || undefined, event.request.url);
     if (this._attemptedAuthentications.has(event.requestId)) {
       response = 'CancelAuth';
-    } else if (shouldProvideCredentials) {
+    } else if (credentials) {
       response = 'ProvideCredentials';
       this._attemptedAuthentications.add(event.requestId);
     }
-    const { username, password } =  shouldProvideCredentials && this._credentials ? this._credentials : { username: undefined, password: undefined };
+    const { username, password } = credentials || { username: undefined, password: undefined };
     sessionInfo.session._sendMayFail('Fetch.continueWithAuth', {
       requestId: event.requestId,
       authChallengeResponse: { response, username, password },
     });
-  }
-
-  _shouldProvideCredentials(url: string): boolean {
-    if (!this._credentials)
-      return false;
-    return !this._credentials.origin || new URL(url).origin.toLowerCase() === this._credentials.origin.toLowerCase();
   }
 
   _onRequestPaused(sessionInfo: SessionInfo, event: Protocol.Fetch.requestPausedPayload) {
@@ -520,6 +520,11 @@ export class CRNetworkManager {
       request.request.setRawRequestHeaders(null);
     }
     this._deleteRequest(request);
+    // Chromium aborts 204 responses, other browsers finish them.
+    if (response?.status() === 204) {
+      (this._page?.frameManager || this._serviceWorker)!.reportRequestFinished(request.request, response);
+      return;
+    }
     request.request._setFailureText(event.errorText || event.blockedReason || '');
     (this._page?.frameManager || this._serviceWorker)!.requestFailed(request.request, !!event.canceled);
   }
@@ -527,7 +532,10 @@ export class CRNetworkManager {
   _onWebSocketWillSendHandshakeRequest(event: Protocol.Network.webSocketWillSendHandshakeRequestPayload) {
     const wallTimeMs = event.wallTime * 1000;
     this._timestampBaselineForWebSocket.set(event.requestId, wallTimeMs - event.timestamp * 1000);
-    this._page!.frameManager.onWebSocketRequest(event.requestId, headersObjectToArray(event.request.headers, '\n'), wallTimeMs);
+    this._page!.frameManager.onWebSocketRequest(event.requestId, {
+      headers: headersObjectToArray(event.request.headers, '\n'),
+      wallTimeMs,
+    });
   }
 
   _onWebSocketClosed(event: Protocol.Network.webSocketClosedPayload) {
@@ -553,6 +561,12 @@ export class CRNetworkManager {
       request.session = sessionInfo.session;
   }
 }
+
+// Resource types of static subresources that are safe to fetch again. Unlike
+// Sec-Fetch-Dest, resource type is reported for plain http origins as well.
+const kRefetchSafeResourceTypes = new Set<network.ResourceType>([
+  'font', 'image', 'manifest', 'media', 'script', 'stylesheet', 'texttrack',
+]);
 
 const kInterceptableRequest = Symbol('InterceptableRequest');
 
@@ -596,7 +610,17 @@ class InterceptableRequest {
       if (interceptable._originalRequestRoute?._fulfilled)
         return Buffer.from('');
 
-      // For <link prefetch we are going to receive empty body with non-empty content-length expectation. Reach out for the actual content.
+      // Re-fetching the resource may produce side effects on the server, only
+      // do it for GETs of static subresources and prefetch requests.
+      if (request.method() !== 'GET')
+        return Buffer.from('');
+      if (!kRefetchSafeResourceTypes.has(request.resourceType())) {
+        const rawHeaders = await request.internalRawRequestHeaders();
+        const isPrefetch = rawHeaders.some(h => h.name.toLowerCase() === 'sec-purpose' && h.value.startsWith('prefetch'));
+        if (!isPrefetch)
+          return Buffer.from('');
+      }
+
       const resource = await session.send('Network.loadNetworkResource', { url: request.url(), frameId: request.serviceWorker() ? undefined : request.frame()!._id, options: { disableCache: false, includeCredentials: true } });
       const chunks: Buffer[] = [];
       while (resource.resource.stream) {
@@ -719,20 +743,6 @@ async function catchDisallowedErrors(callback: () => Promise<void>) {
 // network stack source the cookie from the store. https://github.com/microsoft/playwright/issues/41428
 function removeCookieHeader(headers: types.HeadersArray): types.HeadersArray {
   return headers.filter(header => header.name.toLowerCase() !== 'cookie');
-}
-
-function splitSetCookieHeader(headers: types.HeadersArray): types.HeadersArray {
-  const index = headers.findIndex(({ name }) => name.toLowerCase() === 'set-cookie');
-  if (index === -1)
-    return headers;
-
-  const header = headers[index];
-  const values = header.value.split('\n');
-  if (values.length === 1)
-    return headers;
-  const result = headers.slice();
-  result.splice(index, 1, ...values.map(value => ({ name: header.name, value })));
-  return result;
 }
 
 const errorReasons: { [reason: string]: Protocol.Network.ErrorReason } = {

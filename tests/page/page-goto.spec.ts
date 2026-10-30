@@ -34,6 +34,15 @@ it('should work with file URL', async ({ page, asset, isAndroid, mode, channel }
   expect(page.frames().length).toBe(1);
 });
 
+it('should navigate from file URL to about:blank', async ({ page, asset, isAndroid, channel }) => {
+  it.info().annotations.push({ type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42050' });
+  it.skip(isAndroid, 'No files on Android');
+  it.skip(channel === 'webkit-wsl', 'separate filesystem on wsl');
+
+  await page.goto(url.pathToFileURL(asset('empty.html')).href);
+  await page.goto('about:blank');
+});
+
 it('should work with file URL with subframes', async ({ page, asset, isAndroid, mode, channel }) => {
   it.skip(isAndroid, 'No files on Android');
   it.skip(channel === 'webkit-wsl', 'separate filesystem on wsl');
@@ -113,6 +122,27 @@ it('should work with Cross-Origin-Opener-Policy', async ({ page, server }) => {
   expect(requests.size).toBe(1);
   expect(response.request().failure()).toBeNull();
 });
+
+for (const crossOriginEmbedderPolicy of [undefined, 'require-corp']) {
+  it(`should work with Cross-Origin-Opener-Policy${crossOriginEmbedderPolicy ? ' and Cross-Origin-Embedder-Policy' : ''} and history state`, async ({ page, server }) => {
+    it.info().annotations.push({ type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42731' });
+    server.setRoute('/empty.html', (req, res) => {
+      res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+      if (crossOriginEmbedderPolicy)
+        res.setHeader('Cross-Origin-Embedder-Policy', crossOriginEmbedderPolicy);
+      res.end(`
+        <!doctype html>
+        <h1>hello</h1>
+        <script type="module">history.replaceState({ key: 1 }, '', location.href);</script>
+      `);
+    });
+    const response = await page.goto(server.EMPTY_PAGE);
+    expect(response.status()).toBe(200);
+    expect(page.url()).toBe(server.EMPTY_PAGE);
+    expect(await page.evaluate(() => history.state)).toEqual({ key: 1 });
+    await expect(page.locator('h1')).toHaveText('hello');
+  });
+}
 
 it('should work with Cross-Origin-Opener-Policy and interception', async ({ page, server }) => {
   server.setRoute('/empty.html', (req, res) => {

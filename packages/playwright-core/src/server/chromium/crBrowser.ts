@@ -33,6 +33,7 @@ import { CRServiceWorker } from './crServiceWorker';
 import type { InitScript } from '../page';
 import type { ConnectionTransport } from '../transport';
 import type * as types from '../types';
+import type { HttpCredentials } from '@protocol/structs';
 import type { CDPSession, CRSession } from './crConnection';
 import type { CRDevTools } from './crDevTools';
 import type { Protocol } from './protocol';
@@ -48,6 +49,7 @@ export class CRBrowser extends Browser {
   _crPages = new Map<string, CRPage>();
   _serviceWorkers = new Map<string, CRServiceWorker>();
   _devtools?: CRDevTools;
+  _isConnecting = false;
   private _version = '';
   private _majorVersion = 0;
   _revision = '';
@@ -84,16 +86,21 @@ export class CRBrowser extends Browser {
       return browser;
     }
     browser._defaultContext = new CRBrowserContext(browser, undefined, options.persistent);
-    await Promise.all([
-      session.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }).then(async () => {
-        // Target.setAutoAttach has a bug where it does not wait for new Targets being attached.
-        // However making a dummy call afterwards fixes this.
-        // This can be removed after https://chromium-review.googlesource.com/c/chromium/src/+/2885888 lands in stable.
-        await session.send('Target.getTargetInfo');
-      }),
-      browser._defaultContext.initialize(),
-    ]);
-    await browser._waitForAllPagesToBeInitialized();
+    browser._isConnecting = true;
+    try {
+      await Promise.all([
+        session.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }).then(async () => {
+          // Target.setAutoAttach has a bug where it does not wait for new Targets being attached.
+          // However making a dummy call afterwards fixes this.
+          // This can be removed after https://chromium-review.googlesource.com/c/chromium/src/+/2885888 lands in stable.
+          await session.send('Target.getTargetInfo');
+        }),
+        browser._defaultContext.initialize(),
+      ]);
+      await browser._waitForAllPagesToBeInitialized();
+    } finally {
+      browser._isConnecting = false;
+    }
     return browser;
   }
 
@@ -224,6 +231,7 @@ export class CRBrowser extends Browser {
       serviceWorker.didClose();
       return;
     }
+    this._session.disposeChildSession(payload.sessionId);
   }
 
   private _didDisconnect() {
@@ -370,7 +378,7 @@ export class CRBrowserContext extends BrowserContext<CREventsMap> {
   }
 
   override async doCreateNewPage(): Promise<Page> {
-    const { targetId } = await this._browser._session.send('Target.createTarget', { url: 'about:blank', browserContextId: this._browserContextId, background: false, focus: false });
+    const { targetId } = await this._browser._session.send('Target.createTarget', { url: 'about:blank', browserContextId: this._browserContextId });
     return this._browser._crPages.get(targetId)!._page;
   }
 
@@ -509,7 +517,7 @@ export class CRBrowserContext extends BrowserContext<CREventsMap> {
       await (sw as CRServiceWorker).updateOffline();
   }
 
-  async doSetHTTPCredentials(httpCredentials?: types.Credentials): Promise<void> {
+  async doSetHTTPCredentials(httpCredentials?: HttpCredentials[]): Promise<void> {
     this._options.httpCredentials = httpCredentials;
     for (const page of this.pages())
       await (page.delegate as CRPage).updateHttpCredentials();
@@ -574,9 +582,6 @@ export class CRBrowserContext extends BrowserContext<CREventsMap> {
       serviceWorker.didClose();
       this._browser._serviceWorkers.delete(targetId);
     }
-  }
-
-  onClosePersistent() {
   }
 
   override async clearCache(): Promise<void> {

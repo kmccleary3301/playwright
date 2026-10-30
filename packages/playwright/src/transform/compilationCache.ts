@@ -20,7 +20,6 @@ import path from 'path';
 
 import sourceMapSupport from 'source-map-support';
 import { calculateSha1 } from '@utils/crypto';
-import { isUnderTest } from '@utils/debug';
 
 import { isWorkerProcess } from '../globals';
 import { packageRoot } from '../package';
@@ -28,7 +27,6 @@ import { packageRoot } from '../package';
 export type MemoryCache = {
   codePath: string;
   sourceMapPath: string;
-  dataPath: string;
   moduleUrl?: string;
 };
 
@@ -36,7 +34,6 @@ export type SerializedCompilationCache = {
   sourceMaps: [string, string][],
   memoryCache: [string, MemoryCache][],
   fileDependencies: [string, string[]][],
-  externalDependencies: [string, string[]][],
 };
 
 // Assumptions for the compilation cache:
@@ -66,10 +63,6 @@ const sourceMaps: Map<string, string> = new Map();
 const memoryCache = new Map<string, MemoryCache>();
 // Dependencies resolved by the loader.
 const fileDependencies = new Map<string, Set<string>>();
-// Dependencies resolved by the external bundler.
-const externalDependencies = new Map<string, Set<string>>();
-
-const devSourceInfix = path.sep + 'playwright' + path.sep + 'packages' + path.sep;
 
 export function installSourceMapSupport() {
   Error.stackTraceLimit = 200;
@@ -78,8 +71,6 @@ export function installSourceMapSupport() {
     environment: 'node',
     handleUncaughtExceptions: false,
     retrieveSourceMap(source) {
-      if (!process.env.PWDEBUGIMPL && isUnderTest() && source.includes(devSourceInfix))
-        return { map: identitySourceMap(source), url: source };
       if (!sourceMaps.has(source))
         return null;
       const sourceMapPath = sourceMaps.get(source)!;
@@ -95,15 +86,6 @@ export function installSourceMapSupport() {
   });
 }
 
-function identitySourceMap(source: string) {
-  const lineCount = fs.readFileSync(source, 'utf8').split('\n').length;
-  return {
-    version: 3,
-    sources: [source],
-    mappings: lineCount ? 'AAAA' + ';AACA'.repeat(lineCount - 1) : '',
-  };
-}
-
 function _innerAddToCompilationCacheAndSerialize(filename: string, entry: MemoryCache) {
   sourceMaps.set(entry.moduleUrl || filename, entry.sourceMapPath);
   memoryCache.set(filename, entry);
@@ -115,10 +97,31 @@ function _innerAddToCompilationCacheAndSerialize(filename: string, entry: Memory
   };
 }
 
+// Cached code files are prefixed with a `// <sha1>` line so that a partially
+// written cache entry is detected and ignored when reading.
+function writeCodeCache(codePath: string, code: string) {
+  fs.writeFileSync(codePath, `// ${calculateSha1(code)}\n${code}`, 'utf8');
+}
+
+function readCodeCache(codePath: string): string {
+  const content = fs.readFileSync(codePath, 'utf8');
+  const newLineIndex = content.indexOf('\n');
+  if (newLineIndex === -1)
+    throw new Error(`Cache file is missing the hash header`);
+  const firstLine = content.substring(0, newLineIndex);
+  const sha1Length = 40;
+  if (firstLine.length !== '// '.length + sha1Length || !firstLine.startsWith('// '))
+    throw new Error(`Cache file has a malformed hash header`);
+  const code = content.substring(newLineIndex + 1);
+  if (calculateSha1(code) !== firstLine.substring('// '.length))
+    throw new Error(`Cache file content does not match the hash header`);
+  return code;
+}
+
 type CompilationCacheLookupResult = {
   serializedCache?: any;
   cachedCode?: string;
-  addToCache?: (code: string, map: any | undefined | null, data: Map<string, any>) => { serializedCache?: any };
+  addToCache?: (code: string, map: any | undefined | null) => { serializedCache?: any };
 };
 
 export function getFromCompilationCache(filename: string, contentHash: string, moduleUrl?: string): CompilationCacheLookupResult {
@@ -127,7 +130,7 @@ export function getFromCompilationCache(filename: string, contentHash: string, m
   const cache = memoryCache.get(filename);
   if (cache?.codePath) {
     try {
-      return { cachedCode: fs.readFileSync(cache.codePath, 'utf-8') };
+      return { cachedCode: readCodeCache(cache.codePath) };
     } catch {
       // Not able to read the file - fall through.
     }
@@ -140,16 +143,15 @@ export function getFromCompilationCache(filename: string, contentHash: string, m
   const cachePath = calculateCachePath(filename, cacheFolderName, hashPrefix);
   const codePath = cachePath + '.js';
   const sourceMapPath = cachePath + '.map';
-  const dataPath = cachePath + '.data';
   try {
-    const cachedCode = fs.readFileSync(codePath, 'utf8');
-    const serializedCache = _innerAddToCompilationCacheAndSerialize(filename, { codePath, sourceMapPath, dataPath, moduleUrl });
+    const cachedCode = readCodeCache(codePath);
+    const serializedCache = _innerAddToCompilationCacheAndSerialize(filename, { codePath, sourceMapPath, moduleUrl });
     return { cachedCode, serializedCache };
   } catch {
   }
 
   return {
-    addToCache: (code: string, map: any | undefined | null, data: Map<string, any>) => {
+    addToCache: (code: string, map: any | undefined | null) => {
       if (isWorkerProcess())
         return {};
       // Trim cache. This won't help with deleted files, but it will remove storing multiple copies of the same file
@@ -157,10 +159,8 @@ export function getFromCompilationCache(filename: string, contentHash: string, m
       fs.mkdirSync(path.dirname(cachePath), { recursive: true });
       if (map)
         fs.writeFileSync(sourceMapPath, JSON.stringify(map), 'utf8');
-      if (data.size)
-        fs.writeFileSync(dataPath, JSON.stringify(Object.fromEntries(data.entries()), undefined, 2), 'utf8');
-      fs.writeFileSync(codePath, code, 'utf8');
-      const serializedCache = _innerAddToCompilationCacheAndSerialize(filename, { codePath, sourceMapPath, dataPath, moduleUrl });
+      writeCodeCache(codePath, code);
+      const serializedCache = _innerAddToCompilationCacheAndSerialize(filename, { codePath, sourceMapPath, moduleUrl });
       return { serializedCache };
     }
   };
@@ -171,7 +171,6 @@ export function serializeCompilationCache(): SerializedCompilationCache {
     sourceMaps: [...sourceMaps.entries()],
     memoryCache: [...memoryCache.entries()],
     fileDependencies: [...fileDependencies.entries()].map(([filename, deps]) => ([filename, [...deps]])),
-    externalDependencies: [...externalDependencies.entries()].map(([filename, deps]) => ([filename, [...deps]])),
   };
 }
 
@@ -183,10 +182,6 @@ export function addToCompilationCache(payload: SerializedCompilationCache) {
   for (const entry of payload.fileDependencies) {
     const existing = fileDependencies.get(entry[0]) || [];
     fileDependencies.set(entry[0], new Set([...entry[1], ...existing]));
-  }
-  for (const entry of payload.externalDependencies) {
-    const existing = externalDependencies.get(entry[0]) || [];
-    externalDependencies.set(entry[0], new Set([...entry[1], ...existing]));
   }
 }
 
@@ -234,11 +229,6 @@ export function currentFileDepsCollector(): Set<string> | undefined {
   return depsCollector;
 }
 
-export function setExternalDependencies(filename: string, deps: string[]) {
-  const depsSet = new Set(deps.filter(dep => !belongsToNodeModules(dep) && dep !== filename));
-  externalDependencies.set(filename, depsSet);
-}
-
 export function fileDependenciesForTest() {
   return Object.fromEntries([...fileDependencies.entries()].map(entry => (
     [path.basename(entry[0]), [...entry[1]].map(f => path.basename(f)).sort()]
@@ -255,18 +245,6 @@ export function collectAffectedTestFiles(changedFile: string, testFileCollector:
     if (deps.has(changedFile))
       testFileCollector.add(testFile);
   }
-
-  for (const [importingFile, depsOfImportingFile] of externalDependencies) {
-    if (depsOfImportingFile.has(changedFile)) {
-      if (isTestFile(importingFile))
-        testFileCollector.add(importingFile);
-
-      for (const [testFile, depsOfTestFile] of fileDependencies) {
-        if (depsOfTestFile.has(importingFile))
-          testFileCollector.add(testFile);
-      }
-    }
-  }
 }
 
 export function affectedTestFiles(changes: string[]): string[] {
@@ -281,15 +259,7 @@ export function internalDependenciesForTestFile(filename: string): Set<string> |
 }
 
 export function dependenciesForTestFile(filename: string): Set<string> {
-  const result = new Set<string>();
-  for (const testDependency of fileDependencies.get(filename) || []) {
-    result.add(testDependency);
-    for (const externalDependency of externalDependencies.get(testDependency) || [])
-      result.add(externalDependency);
-  }
-  for (const dep of externalDependencies.get(filename) || [])
-    result.add(dep);
-  return result;
+  return fileDependencies.get(filename) || new Set();
 }
 
 // This is only used in the dev mode, specifically excluding
@@ -303,18 +273,4 @@ export function belongsToNodeModules(file: string) {
   if (file.startsWith(kPlaywrightInternalPrefix) && (file.endsWith('.js') || file.endsWith('.mjs')))
     return true;
   return false;
-}
-
-export async function getUserData(pluginName: string): Promise<Map<string, any>> {
-  const result = new Map<string, any>();
-  for (const [fileName, cache] of memoryCache) {
-    if (!cache.dataPath)
-      continue;
-    if (!fs.existsSync(cache.dataPath))
-      continue;
-    const data = JSON.parse(await fs.promises.readFile(cache.dataPath, 'utf8'));
-    if (data[pluginName])
-      result.set(fileName, data[pluginName]);
-  }
-  return result;
 }

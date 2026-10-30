@@ -7,6 +7,12 @@ When to consider operation succeeded, defaults to `load`. Events can be either:
 * `'networkidle'` - **DISCOURAGED** consider operation to be finished when there are no network connections for at least `500` ms. Don't use this method for testing, rely on web assertions to assess readiness instead.
 * `'commit'` - consider operation to be finished when network response is received and the document started loading.
 
+## content-option-include-shadow
+- `includeShadow` <[boolean]>
+
+When true, contents of open shadow roots are included as [declarative shadow DOM](https://developer.mozilla.org/en-US/docs/Web/API/Web_components/Using_shadow_DOM#declaratively_with_html),
+i.e. `<template shadowrootmode="open">` elements nested inside their host elements. Closed shadow roots are never included. Defaults to `false`.
+
 ## navigation-timeout
 * langs: python, java, csharp
 - `timeout` <[float]>
@@ -324,6 +330,40 @@ obtained via [`method: BrowserContext.storageState`].
 Populates context with given storage state. This option can be used to initialize context with logged-in information
 obtained via [`method: BrowserContext.storageState`]. Path to the file with saved storage state.
 
+## add-cookies-param
+- `cookies` <[Array]<[Object]>>
+  * alias-java: Cookie
+  - `name` <[string]>
+  - `value` <[string]>
+  - `url` ?<[string]> Either `url` or both `domain` and `path` are required. Optional.
+  - `domain` ?<[string]> For the cookie to apply to all subdomains as well, prefix domain with a dot, like this: ".example.com". Either `url` or both `domain` and `path` are required. Optional.
+  - `path` ?<[string]> Either `url` or both `domain` and `path` are required. Optional.
+  - `expires` ?<[float]> Unix time in seconds. Optional.
+  - `httpOnly` ?<[boolean]> Optional.
+  - `secure` ?<[boolean]> Optional.
+  - `sameSite` ?<[SameSiteAttribute]<"Strict"|"Lax"|"None">> Optional.
+  - `partitionKey` ?<[string]> For partitioned third-party cookies (aka [CHIPS](https://developer.mozilla.org/en-US/docs/Web/Privacy/Guides/Privacy_sandbox/Partitioned_cookies)), the partition key. Optional.
+
+## clear-cookies-option-name
+- `name` <[string]|[RegExp]>
+
+Only removes cookies with the given name.
+
+## clear-cookies-option-domain
+- `domain` <[string]|[RegExp]>
+
+Only removes cookies with the given domain.
+
+## clear-cookies-option-path
+- `path` <[string]|[RegExp]>
+
+Only removes cookies with the given path.
+
+## cookies-param-urls
+- `urls` ?<[string]|[Array]<[string]>>
+
+Optional list of URLs.
+
 ## storagestate-option-path
 - `path` <[path]>
 
@@ -584,6 +624,18 @@ to a function, the function is automatically invoked.
 
 Function to be evaluated in the page context.
 
+## js-evaluate-expose-functions
+* langs: js
+- `exposeFunctions` <[boolean]>
+
+When set to `true`, functions passed inside [`param: arg`] are exposed in the page and can be called from the page function. Calling one returns a [Promise] of its result. Under the hood, each function is exposed via [`method: Page.exposeFunction`], so it is technically accessible from all frames of the page. Exposed functions are cleared upon the top-level navigation. Defaults to `false`, in which case functions are not serializable and passing one throws an error.
+
+## js-init-script-expose-functions
+* langs: js
+- `exposeFunctions` <[boolean]>
+
+When set to `true`, functions passed inside [`param: arg`] are exposed in the page and can be called from the init script. Calling one returns a [Promise] of its result. Under the hood, each function is exposed via [`method: Page.exposeFunction`], so it is technically accessible from all frames of the page. Unlike functions passed to [`method: Page.evaluate`], functions passed to an init script are exposed in every new document, so they survive navigations. Defaults to `false`, in which case functions are not serializable and are silently dropped.
+
 ## js-evalonselector-pagefunction
 * langs: js
 - `pageFunction` <[function]\([Element]\)|[string]>
@@ -659,7 +711,7 @@ Specify device scale factor (can be thought of as dpr). Defaults to `1`. Learn m
 ## context-option-ismobile
 - `isMobile` <[boolean]>
 
-Whether the `meta viewport` tag is taken into account and touch events are enabled. isMobile is a part of device, so you don't actually need to set it manually. Defaults to `false` and is not supported in Firefox. Learn more about [mobile emulation](../emulation.md#ismobile).
+Whether the `meta viewport` tag is taken into account and touch events are enabled. isMobile is a part of device, so you don't actually need to set it manually. Defaults to `false`. Learn more about [mobile emulation](../emulation.md#ismobile).
 
 ## context-option-hastouch
 - `hasTouch` <[boolean]>
@@ -706,7 +758,7 @@ An object containing additional HTTP headers to be sent with every request. Defa
 Whether to emulate network being offline. Defaults to `false`. Learn more about [network emulation](../emulation.md#offline).
 
 ## context-option-httpcredentials
-- `httpCredentials` <[Object]>
+- `httpCredentials` <[Object]|[Array]<[Object]>>
   * alias: HttpCredentials
   - `username` <[string]>
   - `password` <[string]>
@@ -715,6 +767,8 @@ Whether to emulate network being offline. Defaults to `false`. Learn more about 
 
 Credentials for [HTTP authentication](https://developer.mozilla.org/en-US/docs/Web/HTTP/Authentication).
 If no origin is specified, the username and password are sent to any servers upon unauthorized responses.
+
+Pass an array to use different credentials for different origins. The first entry that matches the request origin is used, and entries with no origin match any request.
 
 ## context-option-colorscheme
 * langs: js, java
@@ -831,10 +885,16 @@ When set to `minimal`, only record information necessary for routing from HAR. T
     Actual picture of each page will be scaled down if necessary to fit the specified size.
     - `width` <[int]> Video frame width.
     - `height` <[int]> Video frame height.
+  - `fps` ?<[int]> Frame rate of the recorded videos in frames per second. Defaults to `25`. Firefox and WebKit currently capture up to 25 frames per second.
   - `showActions` ?<[Object]> If specified, enables visual annotations on interacted elements during video recording.
     - `duration` ?<[float]> How long each annotation is displayed in milliseconds. Defaults to `500`.
     - `position` ?<[AnnotatePosition]<"top-left"|"top"|"top-right"|"bottom-left"|"bottom"|"bottom-right">> Position of the action title overlay. Defaults to `"top-right"`.
-    - `fontSize` ?<[int]> Font size of the action title in pixels. Defaults to `24`.
+    - `fontSize` ?<[int]> Font size of the action title in pixels. Defaults to `24`. Deprecated, use `style.title` instead.
+    - `cursor` ?<[ScreencastCursor]<"none"|"pointer">> Cursor decoration shown for pointer actions. `"pointer"` (the default) renders a mouse pointer that animates from the previous action point to the next one. `"none"` disables the cursor decoration.
+    - `style` ?<[Object]> Styles of the action decorations.
+      - `point` ?<[string]> CSS declarations for the zero-sized marker centered on the action point. Not shown when omitted.
+      - `highlight` ?<[string]> CSS declarations for the box that covers the target element. Not shown when omitted.
+      - `title` ?<[string]> CSS declarations for the action title.
 
 Enables video recording for all pages into `recordVideo.dir` directory. If not specified videos are not recorded. Make
 sure to await [`method: BrowserContext.close`] for videos to be saved.
@@ -858,6 +918,13 @@ not recorded. Make sure to call [`method: BrowserContext.close`] for videos to b
 Dimensions of the recorded videos. If not specified the size will be equal to `viewport`
 scaled down to fit into 800x800. If `viewport` is not configured explicitly the video size defaults to 800x450.
 Actual picture of each page will be scaled down if necessary to fit the specified size.
+
+## context-option-recordvideo-fps
+* langs: csharp, java, python
+  - alias-python: record_video_fps
+- `recordVideoFps` <[int]>
+
+Frame rate of the recorded videos in frames per second. Defaults to `25`. Firefox and WebKit currently capture up to 25 frames per second.
 
 ## context-option-proxy
 - `proxy` <[Object]>
@@ -1001,11 +1068,19 @@ The default value can be changed by using the [`method: BrowserContext.setDefaul
 
 ## wait-for-event-signal
 * langs: js
-* since: v1.61
+* since: v1.62
 - `signal` <[AbortSignal]>
 
 Allows to cancel the waiting using an [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal). If the signal is aborted, the waiting will be aborted and the operation will throw an error.
-Note that providing a signal does not disable the default timeout; pass `timeout: 0` to disable the timeout entirely.
+Note that providing a signal does not disable the default timeout, which can be changed using [`method: BrowserContext.setDefaultTimeout`]; pass `timeout: 0` to disable the timeout entirely.
+
+## input-signal
+* langs: js
+* since: v1.62
+- `signal` <[AbortSignal]>
+
+Allows to cancel the operation using an [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal). If the signal is aborted, the operation will be aborted and throw an error.
+Note that providing a signal does not disable the default timeout, which can be changed using [`method: BrowserContext.setDefaultTimeout`] or [`method: Page.setDefaultTimeout`]; pass `timeout: 0` to disable the timeout entirely.
 
 ## android-timeout
 * langs: js
@@ -1019,6 +1094,16 @@ using the [`method: AndroidDevice.setDefaultTimeout`] method.
 - `timeout` <[float]>
 
 Time to retry the assertion for in milliseconds. Defaults to `timeout` in `TestConfig.expect`.
+
+## js-assertions-signal
+* langs: js
+* since: v1.62
+- `signal` <[AbortSignal]>
+
+An optional [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal) that
+can cancel the assertion. Aborting the signal fails the assertion like a timeout: if the signal
+is aborted while the assertion is retrying, or is already aborted before the assertion starts,
+the assertion fails without retrying further.
 
 ## csharp-java-python-assertions-timeout
 * langs: java, python, csharp
@@ -1035,13 +1120,13 @@ Whether to perform case-insensitive match. [`option: ignoreCase`] option takes p
 * langs: js
 - `maxDiffPixels` <[int]>
 
-An acceptable amount of pixels that could be different. Default is configurable with `TestConfig.expect`. Unset by default.
+An acceptable amount of pixels that could be different. Default is configurable with `TestConfig.expect`. Note that [`option: threshold`] defines which pixels are considered different.
 
 ## assertions-max-diff-pixel-ratio
 * langs: js
 - `maxDiffPixelRatio` <[float]>
 
-An acceptable ratio of pixels that are different to the total amount of pixels, between `0` and `1`. Default is configurable with `TestConfig.expect`. Unset by default.
+An acceptable ratio of pixels that are different to the total amount of pixels, between `0` and `1`. Default is configurable with `TestConfig.expect`. Note that [`option: threshold`] defines which pixels are considered different.
 
 ## assertions-threshold
 * langs: js
@@ -1183,7 +1268,7 @@ Logger sink for Playwright logging.
 ## browser-option-timeout
 - `timeout` <[float]>
 
-Maximum time in milliseconds to wait for the browser instance to start. Defaults to `30000` (30 seconds). Pass `0` to
+Maximum time in milliseconds to wait for the browser instance to start. Defaults to `180000` (3 minutes). Pass `0` to
 disable timeout.
 
 ## browser-option-artifactsdir
@@ -1252,7 +1337,7 @@ Matches elements that do not contain specified text somewhere inside, possibly i
 ## locator-option-visible
 - `visible` <[boolean]>
 
-Only matches visible or invisible elements.
+Only matches visible or invisible elements. Prefer the [`method: Locator.visible`] shortcut when matching only visible elements.
 
 ## locator-options-list-v1.14
 - %%-locator-option-has-text-%%
@@ -1285,7 +1370,8 @@ Defaults to `false`.
 ## screenshot-option-quality
 - `quality` <[int]>
 
-The quality of the image, between 0-100. Not applicable to `png` images.
+The quality of the image, between 0-100. Not applicable to `png` images. For `jpeg` the default is `80`.
+For `webp`, a quality of `100` (the default) produces a lossless image, while lower values use lossy compression.
 
 ## screenshot-option-path
 - `path` <[path]>
@@ -1295,7 +1381,7 @@ relative path, then it is resolved relative to the current working directory. If
 saved to the disk.
 
 ## screenshot-option-type
-- `type` <[ScreenshotType]<"png"|"jpeg">>
+- `type` <[ScreenshotType]<"png"|"jpeg"|"webp">>
 
 Specify screenshot type, defaults to `png`.
 
@@ -1391,14 +1477,6 @@ Whether to find an exact match: case-sensitive and whole-string. Default to fals
 - `role` <[AriaRole]<"alert"|"alertdialog"|"application"|"article"|"banner"|"blockquote"|"button"|"caption"|"cell"|"checkbox"|"code"|"columnheader"|"combobox"|"complementary"|"contentinfo"|"definition"|"deletion"|"dialog"|"directory"|"document"|"emphasis"|"feed"|"figure"|"form"|"generic"|"grid"|"gridcell"|"group"|"heading"|"img"|"insertion"|"link"|"list"|"listbox"|"listitem"|"log"|"main"|"marquee"|"math"|"meter"|"menu"|"menubar"|"menuitem"|"menuitemcheckbox"|"menuitemradio"|"navigation"|"none"|"note"|"option"|"paragraph"|"presentation"|"progressbar"|"radio"|"radiogroup"|"region"|"row"|"rowgroup"|"rowheader"|"scrollbar"|"search"|"searchbox"|"separator"|"slider"|"spinbutton"|"status"|"strong"|"subscript"|"superscript"|"switch"|"tab"|"table"|"tablist"|"tabpanel"|"term"|"textbox"|"time"|"timer"|"toolbar"|"tooltip"|"tree"|"treegrid"|"treeitem">>
 
 Required aria role.
-
-## locator-get-by-role-option-busy
-* since: v1.61
-- `busy` <[boolean]>
-
-An attribute that is usually set by `aria-busy`.
-
-Learn more about [`aria-busy`](https://www.w3.org/TR/wai-aria-1.2/#aria-busy).
 
 ## locator-get-by-role-option-checked
 * since: v1.27
@@ -2009,3 +2087,26 @@ In this config:
   * alias-java: ServerAddr
   - `ipAddress` <[string]> IPv4 or IPV6 address of the server.
   - `port` <[int]>
+
+## resource-timing
+- returns: <[Object]>
+  * alias-csharp: RequestTimingResult
+  * alias-java: Timing
+  - `startTime` <[float]> Request start time in milliseconds elapsed since January 1, 1970 00:00:00 UTC
+  - `domainLookupStart` <[float]> Time immediately before the client starts the domain name lookup for the
+    resource. The value is given in milliseconds relative to `startTime`, -1 if not available.
+  - `domainLookupEnd` <[float]> Time immediately after the client ends the domain name lookup for the resource.
+    The value is given in milliseconds relative to `startTime`, -1 if not available.
+  - `connectStart` <[float]> Time immediately before the client starts establishing the connection to the server
+    to retrieve the resource. The value is given in milliseconds relative to `startTime`, -1 if not available.
+  - `secureConnectionStart` <[float]> Time immediately before the client starts the handshake process to secure the
+    current connection. The value is given in milliseconds relative to `startTime`, -1 if not available.
+  - `connectEnd` <[float]> Time immediately after the client establishes the connection to the server
+    to retrieve the resource. The value is given in milliseconds relative to `startTime`, -1 if not available.
+  - `requestStart` <[float]> Time immediately before the client starts requesting the resource from the server,
+    cache, or local resource. The value is given in milliseconds relative to `startTime`, -1 if not available.
+  - `responseStart` <[float]> Time immediately after the client receives the first byte of the response from the server,
+    cache, or local resource. The value is given in milliseconds relative to `startTime`, -1 if not available.
+  - `responseEnd` <[float]> Time immediately after the client receives the last byte of the resource or immediately
+    before the transport connection is closed, whichever comes first. The value is given in milliseconds relative to
+    `startTime`, -1 if not available.

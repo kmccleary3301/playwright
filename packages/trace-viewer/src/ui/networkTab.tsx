@@ -20,7 +20,7 @@ import './networkTab.css';
 import { NetworkResourceDetails, WebSocketResourceDetails } from './networkResourceDetails';
 import { bytesToString, msToString } from '@isomorphic/formatUtils';
 import { PlaceholderPanel } from './placeholderPanel';
-import { context } from '@isomorphic/trace/traceModel';
+import { resourceOwnerRef } from '@isomorphic/trace/traceModel';
 import type { ResourceEntry, TraceModel } from '@isomorphic/trace/traceModel';
 import { GridView, type RenderedGridCell } from '@web/components/gridView';
 import { SplitView } from '@web/components/splitView';
@@ -217,15 +217,10 @@ const renderCell = (entry: RenderedEntry, column: ColumnName): RenderedGridCell 
 };
 
 function resourceContextId(model: TraceModel | undefined, resource: ResourceEntry): string {
-  if (!model)
+  const ownerRef = resourceOwnerRef(resource);
+  if (!model || !ownerRef)
     return '';
-  if (resource.pageref)
-    return model.pagerefToTitle.get(resource.pageref) || '';
-  if (resource._apiRequest) {
-    const contextEntry = context(resource);
-    return (contextEntry && model.contextToTitle.get(contextEntry)) || '';
-  }
-  return '';
+  return model.resourceOwnerRefToTitle.get(ownerRef) || '';
 }
 
 const renderEntry = (resource: ResourceEntry, boundaries: Boundaries, model: TraceModel | undefined): RenderedEntry => {
@@ -278,7 +273,7 @@ function formatRouteStatus(request: ResourceEntry): string {
     return 'continued';
   if (request._wasFulfilled)
     return 'fulfilled';
-  if (request._apiRequest)
+  if (request._apiRequestRef)
     return 'api';
   return '';
 }

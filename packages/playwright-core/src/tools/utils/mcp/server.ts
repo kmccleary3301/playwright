@@ -23,11 +23,12 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { startMcpHttpServer } from './http';
 import { toMcpTool } from './tool';
 
-import type { CallToolResult, CallToolRequest, Root } from '@modelcontextprotocol/sdk/types.js';
+import type { CallToolResult, CallToolRequest, Root, Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 export type { Server } from '@modelcontextprotocol/sdk/server/index.js';
 export type { Tool, CallToolResult, CallToolRequest, Root } from '@modelcontextprotocol/sdk/types.js';
 import type { Server as ServerType } from '@modelcontextprotocol/sdk/server/index.js';
+import type { ToolCapability } from '../../backend/tool';
 import type { ToolSchema } from './tool';
 
 const serverDebug = debug('pw:mcp:server');
@@ -38,63 +39,60 @@ export type ClientInfo = {
   clientName: string;
 };
 
-class BackendManager {
-  private _backends = new Map<ServerBackend, ServerBackendFactory>();
-
-  async createBackend(factory: ServerBackendFactory, clientInfo: ClientInfo): Promise<ServerBackend> {
-    const backend = await factory.create(clientInfo);
-    await backend.initialize?.(clientInfo);
-    this._backends.set(backend, factory);
-    return backend;
-  }
-
-  async disposeBackend(backend: ServerBackend) {
-    const factory = this._backends.get(backend);
-    if (!factory)
-      return;
-    await backend.dispose?.();
-    await factory.disposed(backend).catch(serverDebug);
-    this._backends.delete(backend);
-  }
-}
-
-const backendManager = new BackendManager();
-
 export interface ServerBackend {
   initialize?(clientInfo: ClientInfo): Promise<void>;
-  callTool(name: string, args: CallToolRequest['params']['arguments'], signal: AbortSignal): Promise<CallToolResult & { isClose?: boolean }>;
+  callTool(name: string, args: CallToolRequest['params']['arguments'], signal: AbortSignal): Promise<CallToolResult>;
+  dynamicTools?(): Tool[];
+  on?(event: 'dynamictoolschange', listener: () => void): void;
   dispose?(): Promise<void>;
+  once(event: 'disconnected', listener: () => void): void;
 }
+
+export type ServerSessionOptions = {
+  capabilities: ToolCapability[];
+};
 
 export type ServerBackendFactory = {
   name: string;
   nameInConfig: string;
   version: string;
+  enabledCapabilities?: ToolCapability[];
   toolSchemas: ToolSchema<any>[];
-  create: (clientInfo: ClientInfo) => Promise<ServerBackend>;
-  disposed: (backend: ServerBackend) => Promise<void>;
+  toolSchemasForCapabilities?: (capabilities: ToolCapability[]) => ToolSchema<any>[];
+  instructions?: (capabilities: ToolCapability[]) => string;
+  create: (clientInfo: ClientInfo, sessionOptions?: ServerSessionOptions) => Promise<ServerBackend>;
 };
 
-export async function connect(factory: ServerBackendFactory, transport: Transport, runHeartbeat: boolean) {
-  const server = createServer(factory.name, factory.version, factory, runHeartbeat);
+export async function connect(factory: ServerBackendFactory, transport: Transport, transportInitialized: Promise<void>, runHeartbeat: boolean, sessionOptions?: ServerSessionOptions) {
+  const server = createServer(factory.name, factory.version, factory, transportInitialized, runHeartbeat, sessionOptions);
   await server.connect(transport);
 }
 
-export function createServer(name: string, version: string, factory: ServerBackendFactory, runHeartbeat: boolean): ServerType {
+export function createServer(name: string, version: string, factory: ServerBackendFactory, transportInitialized: Promise<void>, runHeartbeat: boolean, sessionOptions?: ServerSessionOptions): ServerType {
+  const effectiveSessionOptions = sessionOptions ?? (factory.enabledCapabilities ? { capabilities: factory.enabledCapabilities } : undefined);
+  const capabilities = effectiveSessionOptions?.capabilities ?? [];
+  const toolSchemas = sessionOptions
+    ? factory.toolSchemasForCapabilities?.(sessionOptions.capabilities) ?? factory.toolSchemas
+    : factory.toolSchemas;
   const server = new Server({ name, version }, {
     capabilities: {
-      tools: {},
-    }
-  });
-
-  server.setRequestHandler(ListToolsRequestSchema, async () => {
-    serverDebug('listTools');
-    return { tools: factory.toolSchemas.map(s => toMcpTool(s)) };
+      tools: { listChanged: true },
+    },
+    instructions: factory.instructions?.(capabilities),
   });
 
   let backendPromise: Promise<ServerBackend> | undefined;
+  let heartbeatStarted = false;
 
-  const onClose = () => backendPromise?.then(b => backendManager.disposeBackend(b)).catch(serverDebug);
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    serverDebug('listTools');
+    const tools = toolSchemas.map(s => toMcpTool(s));
+    const backend = await backendPromise?.catch(() => undefined);
+    tools.push(...backend?.dynamicTools?.() ?? []);
+    return { tools };
+  });
+
+  const onClose = () => backendPromise?.then(b => b.dispose?.()).catch(serverDebug);
   addServerListener(server, 'close', onClose);
 
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
@@ -102,20 +100,31 @@ export function createServer(name: string, version: string, factory: ServerBacke
 
     try {
       if (!backendPromise) {
-        backendPromise = initializeServer(server, factory, runHeartbeat).catch(e => {
-          backendPromise = undefined;
+        const promise = initializeServer(server, factory, transportInitialized, effectiveSessionOptions).then(backend => {
+          backend.on?.('dynamictoolschange', () => {
+            if (backendPromise === promise)
+              void server.sendToolListChanged().catch(serverDebug);
+          });
+          backend.once('disconnected', () => {
+            if (backendPromise === promise)
+              backendPromise = undefined;
+            void backend.dispose?.().catch(serverDebug);
+          });
+          if (runHeartbeat && !heartbeatStarted) {
+            heartbeatStarted = true;
+            void transportInitialized.then(() => startHeartbeat(server));
+          }
+          return backend;
+        }).catch(e => {
+          if (backendPromise === promise)
+            backendPromise = undefined;
           throw e;
         });
+        backendPromise = promise;
       }
 
       const backend = await backendPromise;
       const toolResult = await backend.callTool(request.params.name, request.params.arguments || {}, extra.signal);
-      if (toolResult.isClose) {
-        await backendManager.disposeBackend(backend).catch(serverDebug);
-        backendPromise = undefined;
-        delete toolResult.isClose;
-      }
-
       const mergedResult = mergeTextParts(toolResult);
       serverDebugResponse('callResult', mergedResult);
       return mergedResult;
@@ -129,10 +138,11 @@ export function createServer(name: string, version: string, factory: ServerBacke
   return server;
 }
 
-const initializeServer = async (server: ServerType, factory: ServerBackendFactory, runHeartbeat: boolean): Promise<ServerBackend> => {
+const initializeServer = async (server: ServerType, factory: ServerBackendFactory, transportInitialized: Promise<void>, sessionOptions?: ServerSessionOptions): Promise<ServerBackend> => {
   const capabilities = server.getClientCapabilities();
   let clientRoots: Root[] = [];
   if (capabilities?.roots) {
+    await Promise.race([transportInitialized, new Promise<void>(f => setTimeout(f, 5000))]);
     const { roots } = await server.listRoots().catch(e => {
       serverDebug(e);
       return { roots: [] };
@@ -145,11 +155,11 @@ const initializeServer = async (server: ServerType, factory: ServerBackendFactor
     clientName: server.getClientVersion()?.name ?? 'Playwright MCP',
   };
 
-  const backend = await backendManager.createBackend(factory, clientInfo);
-  if (runHeartbeat)
-    startHeartbeat(server);
+  const backend = await factory.create(clientInfo, sessionOptions);
+  await backend.initialize?.(clientInfo);
   return backend;
 };
+
 
 const defaultPingTimeout = 5000;
 
@@ -193,10 +203,9 @@ function addServerListener(server: ServerType, event: 'close' | 'initialized', l
 export async function start(serverBackendFactory: ServerBackendFactory, options: { host?: string; port?: number, allowedHosts?: string[], socketPath?: string } = {}) {
   if (options.port === undefined) {
     const transport = new StdioServerTransport();
-    // The SDK's StdioServerTransport doesn't detect peer disconnect — it never listens for stdin
-    // end-of-stream. Wire it up so callTool requests can be cancelled when the client goes away.
-    process.stdin.on('end', () => void transport.close());
-    await connect(serverBackendFactory, transport, false);
+    // Do not close the transport on stdin end. The exit watchdog closes the browsers on stdin
+    // close, and closing a browser that is already closing force-kills it.
+    await connect(serverBackendFactory, transport, Promise.resolve(), false);
     return;
   }
 

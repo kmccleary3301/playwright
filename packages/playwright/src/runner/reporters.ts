@@ -19,6 +19,7 @@ import { calculateSha1 } from '@utils/crypto';
 import { loadReporter } from './loadUtils';
 import { formatError } from '../reporters/base';
 import { BlobReporter } from '../reporters/blob';
+import CoverageReporter from '../reporters/coverage';
 import DotReporter from '../reporters/dot';
 import EmptyReporter from '../reporters/empty';
 import GitHubReporter from '../reporters/github';
@@ -28,6 +29,7 @@ import JUnitReporter from '../reporters/junit';
 import LineReporter from '../reporters/line';
 import ListReporter from '../reporters/list';
 import ListModeReporter from '../reporters/listModeReporter';
+import PerfettoReporter from '../reporters/perfetto';
 import { wrapReporterAsV2 } from '../reporters/reporterV2';
 
 import type { ReporterDescription } from '../../types/test';
@@ -39,20 +41,20 @@ import type { TestRunOptions } from './tasks';
 
 export async function createReporters(config: FullConfigInternal, mode: 'list' | 'test' | 'merge', descriptions?: ReporterDescription[], runOptions?: TestRunOptions): Promise<ReporterV2[]> {
   const defaultReporters: { [key in commonConfig.BuiltInReporter]: new(arg: any) => ReporterV2 } = {
-    blob: BlobReporter,
-    dot: mode === 'list' ? ListModeReporter : DotReporter,
-    line: mode === 'list' ? ListModeReporter : LineReporter,
-    list: mode === 'list' ? ListModeReporter : ListReporter,
-    github: GitHubReporter,
-    json: JSONReporter,
-    junit: JUnitReporter,
-    null: EmptyReporter,
-    html: HtmlReporter,
+    'blob': BlobReporter,
+    'perfetto': PerfettoReporter,
+    'dot': mode === 'list' ? ListModeReporter : DotReporter,
+    'line': mode === 'list' ? ListModeReporter : LineReporter,
+    'list': mode === 'list' ? ListModeReporter : ListReporter,
+    'github': GitHubReporter,
+    'json': JSONReporter,
+    'junit': JUnitReporter,
+    'null': EmptyReporter,
+    'html': HtmlReporter,
+    'coverage': CoverageReporter,
   };
   const reporters: ReporterV2[] = [];
   descriptions ??= config.config.reporter;
-  if (runOptions?.additionalReporters)
-    descriptions = [...descriptions, ...runOptions.additionalReporters];
   const reportOptions = reporterCommandOptions(config, mode, runOptions);
   for (const r of descriptions) {
     const [name, arg] = r;

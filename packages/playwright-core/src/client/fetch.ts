@@ -21,16 +21,18 @@ import { inspect } from 'util';
 import { assert } from '@isomorphic/assert';
 import { headersObjectToArray } from '@isomorphic/headers';
 import { isString } from '@isomorphic/rtti';
-import { toClientCertificatesProtocol } from './browserContext';
+import { toClientCertificatesProtocol, toHttpCredentialsProtocol } from './browserContext';
 import { ChannelOwner } from './channelOwner';
 import { TargetClosedError, isTargetClosedError } from './errors';
-import { RawHeaders } from './network';
+import { RawHeaders, toClearCookiesParams } from './network';
 import { Tracing } from './tracing';
 import { mkdirIfNeeded } from './fileUtils';
-import { TimeoutSettings } from './timeoutSettings';
+import { TimeoutSettings, kNoTimeout } from './timeoutSettings';
 
 import type { Playwright } from './playwright';
+import type { ClearNetworkCookieOptions, NetworkCookie, ResourceTiming, SetNetworkCookieParam } from './network';
 import type { ClientCertificate, FilePayload, Headers, RemoteAddr, SecurityDetails, SetStorageState, StorageState, TimeoutOptions } from './types';
+import type { HttpCredentials } from '@protocol/structs';
 import type { Serializable } from '../../types/structs';
 import type * as api from '../../types/types';
 import type { HeadersArray, NameValue } from '@isomorphic/types';
@@ -44,16 +46,18 @@ export type FetchOptions = {
   form?: { [key: string]: string|number|boolean; } | FormData;
   multipart?: { [key: string]: string|number|boolean|fs.ReadStream|FilePayload; } | FormData;
   timeout?: number,
+  signal?: AbortSignal,
   failOnStatusCode?: boolean,
   ignoreHTTPSErrors?: boolean,
   maxRedirects?: number,
   maxRetries?: number,
 };
 
-export type NewContextOptions = Omit<channels.PlaywrightNewRequestOptions, 'extraHTTPHeaders' | 'clientCertificates' | 'storageState' | 'tracesDir'> & {
+export type NewContextOptions = Omit<channels.PlaywrightNewRequestOptions, 'extraHTTPHeaders' | 'clientCertificates' | 'storageState' | 'tracesDir' | 'httpCredentials'> & {
   extraHTTPHeaders?: Headers,
   storageState?: string | SetStorageState,
   clientCertificates?: ClientCertificate[];
+  httpCredentials?: HttpCredentials | HttpCredentials[];
 };
 
 type RequestWithBodyOptions = Omit<FetchOptions, 'method'>;
@@ -78,7 +82,8 @@ export class APIRequest implements api.APIRequest {
       storageState,
       tracesDir: this._playwright._defaultLaunchOptions?.tracesDir, // We do not expose tracesDir in the API, so do not allow options to accidentally override it.
       clientCertificates: await toClientCertificatesProtocol(options.clientCertificates),
-    })).request);
+      httpCredentials: toHttpCredentialsProtocol(options.httpCredentials),
+    }, kNoTimeout)).request);
     this._contexts.add(context);
     context._request = this;
     context._timeoutSettings.setDefaultTimeout(options.timeout ?? this._playwright._defaultContextTimeout);
@@ -113,7 +118,7 @@ export class APIRequestContext extends ChannelOwner<channels.APIRequestContextCh
     await this._instrumentation.runBeforeCloseRequestContext(this);
     await this.tracing._exportAllHars();
     try {
-      await this._channel.dispose(options);
+      await this._channel.dispose(options, kNoTimeout);
     } catch (e) {
       if (isTargetClosedError(e))
         return;
@@ -121,6 +126,22 @@ export class APIRequestContext extends ChannelOwner<channels.APIRequestContextCh
     }
     this.tracing._resetStackCounter();
     this._request?._contexts.delete(this);
+  }
+
+  async cookies(urls?: string | string[]): Promise<NetworkCookie[]> {
+    if (!urls)
+      urls = [];
+    if (typeof urls === 'string')
+      urls = [urls];
+    return (await this._channel.cookies({ urls }, kNoTimeout)).cookies;
+  }
+
+  async addCookies(cookies: SetNetworkCookieParam[]): Promise<void> {
+    await this._channel.addCookies({ cookies }, kNoTimeout);
+  }
+
+  async clearCookies(options: ClearNetworkCookieOptions = {}): Promise<void> {
+    await this._channel.clearCookies(toClearCookiesParams(options), kNoTimeout);
   }
 
   async delete(url: string, options?: RequestWithBodyOptions): Promise<APIResponse> {
@@ -254,19 +275,18 @@ export class APIRequestContext extends ChannelOwner<channels.APIRequestContextCh
         jsonData,
         formData,
         multipartData,
-        timeout: this._timeoutSettings.timeout(options),
         failOnStatusCode: options.failOnStatusCode,
         ignoreHTTPSErrors: options.ignoreHTTPSErrors,
         maxRedirects: options.maxRedirects,
         maxRetries: options.maxRetries,
         ...fixtures
-      });
+      }, this._timeoutSettings.timeout(options));
       return new APIResponse(this, result.response);
     });
   }
 
-  async storageState(options: { path?: string, indexedDB?: boolean } = {}): Promise<StorageState> {
-    const state = await this._channel.storageState({ indexedDB: options.indexedDB });
+  async storageState(options: { path?: string, indexedDB?: boolean, opfs?: boolean } = {}): Promise<StorageState> {
+    const state = await this._channel.storageState({ indexedDB: options.indexedDB, opfs: options.opfs }, kNoTimeout);
     if (options.path) {
       await mkdirIfNeeded(options.path);
       await fs.promises.writeFile(options.path, JSON.stringify(state, undefined, 2), 'utf8');
@@ -350,10 +370,25 @@ export class APIResponse implements api.APIResponse {
     return this._initializer.serverAddr ?? null;
   }
 
+  timing(): ResourceTiming {
+    return {
+      startTime: -1,
+      domainLookupStart: -1,
+      domainLookupEnd: -1,
+      connectStart: -1,
+      secureConnectionStart: -1,
+      connectEnd: -1,
+      requestStart: -1,
+      responseStart: -1,
+      ...this._initializer.timing,
+      responseEnd: this._initializer.responseEndTiming ?? -1,
+    };
+  }
+
   async body(): Promise<Buffer> {
     return await this._request._wrapApiCall(async () => {
       try {
-        const result = await this._request._channel.fetchResponseBody({ fetchUid: this._fetchUid() });
+        const result = await this._request._channel.fetchResponseBody({ fetchUid: this._fetchUid() }, kNoTimeout);
         if (result.binary === undefined)
           throw new Error('Response has been disposed');
         return result.binary;
@@ -370,7 +405,7 @@ export class APIResponse implements api.APIResponse {
     return content.toString('utf8');
   }
 
-  async json(): Promise<object> {
+  async json(): Promise<any> {
     const content = await this.text();
     return JSON.parse(content);
   }
@@ -380,7 +415,7 @@ export class APIResponse implements api.APIResponse {
   }
 
   async dispose(): Promise<void> {
-    await this._request._channel.disposeAPIResponse({ fetchUid: this._fetchUid() });
+    await this._request._channel.disposeAPIResponse({ fetchUid: this._fetchUid() }, kNoTimeout);
   }
 
   private _inspect() {
@@ -393,7 +428,7 @@ export class APIResponse implements api.APIResponse {
   }
 
   async _fetchLog(): Promise<string[]> {
-    const { log } = await this._request._channel.fetchLog({ fetchUid: this._fetchUid() });
+    const { log } = await this._request._channel.fetchLog({ fetchUid: this._fetchUid() }, kNoTimeout);
     return log;
   }
 }

@@ -22,35 +22,72 @@ export const playwrightExtensionId = 'mmlmfjhmonkocbjadbfplnigmagldckm';
 
 export const playwrightExtensionInstallUrl = `https://chromewebstore.google.com/detail/playwright-extension/${playwrightExtensionId}`;
 
-export async function isPlaywrightExtensionInstalled(userDataDir: string): Promise<boolean> {
-  // Chrome stores profiles as `Default` and `Profile <N>` subdirs of the user data dir;
-  // the extension may be installed into any of them.
+export async function findPlaywrightExtensionProfile(userDataDir: string): Promise<string | undefined> {
+  const profiles = await listProfileDirectories(userDataDir);
+  const lastUsed = await readLastUsedProfile(userDataDir);
+  const ordered = lastUsed && profiles.includes(lastUsed)
+    ? [lastUsed, ...profiles.filter(profile => profile !== lastUsed)]
+    : profiles;
+  for (const profile of ordered) {
+    if (await isExtensionInstalledInProfile(path.join(userDataDir, profile)))
+      return profile;
+  }
+  return undefined;
+}
+
+async function listProfileDirectories(userDataDir: string): Promise<string[]> {
   let entries: string[];
   try {
     entries = await fs.promises.readdir(userDataDir);
   } catch {
-    return false;
+    return [];
   }
-  for (const entry of entries) {
-    if (entry !== 'Default' && !entry.startsWith('Profile '))
-      continue;
-    if (await isExtensionInstalledInProfile(path.join(userDataDir, entry)))
+  const profiles = entries.filter(entry => entry === 'Default' || /^Profile \d+$/.test(entry));
+  profiles.sort((a, b) => profileRank(a) - profileRank(b));
+  return profiles;
+}
+
+function profileRank(profile: string): number {
+  return profile === 'Default' ? -1 : parseInt(profile.slice('Profile '.length), 10);
+}
+
+async function readLastUsedProfile(userDataDir: string): Promise<string | undefined> {
+  try {
+    const localState = JSON.parse(await fs.promises.readFile(path.join(userDataDir, 'Local State'), 'utf-8'));
+    const lastUsed = localState?.profile?.last_used;
+    return typeof lastUsed === 'string' ? lastUsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function isPlaywrightExtensionInstalled(userDataDir: string): Promise<boolean> {
+  return await findPlaywrightExtensionProfile(userDataDir) !== undefined;
+}
+
+export async function isExtensionInstalledInProfile(profileDir: string): Promise<boolean> {
+  // Web store installs unpack into <profile>/Extensions/<id>; `--load-extension` only
+  // leaves a settings record in the preferences.
+  if (await pathExists(path.join(profileDir, 'Extensions', playwrightExtensionId)))
+    return true;
+  // `extensions.settings` lives in Preferences or Secure Preferences depending on the platform.
+  for (const fileName of ['Preferences', 'Secure Preferences']) {
+    if (await hasExtensionSettingsRecord(path.join(profileDir, fileName)))
       return true;
   }
   return false;
 }
 
-async function isExtensionInstalledInProfile(profileDir: string): Promise<boolean> {
-  // Covers two install shapes: web store drops the extension into <profile>/Extensions/<id>;
-  // `--load-extension` does not, and only shows up as the id inside <profile>/Preferences.
-  if (await pathExists(path.join(profileDir, 'Extensions', playwrightExtensionId)))
-    return true;
+async function hasExtensionSettingsRecord(prefsPath: string): Promise<boolean> {
+  let prefs: any;
   try {
-    const prefs = await fs.promises.readFile(path.join(profileDir, 'Preferences'), 'utf-8');
-    return prefs.includes(`"${playwrightExtensionId}"`);
+    prefs = JSON.parse(await fs.promises.readFile(prefsPath, 'utf-8'));
   } catch {
     return false;
   }
+  // Uninstalling leaves an orphaned empty settings record behind, so require a populated one.
+  const record = prefs?.extensions?.settings?.[playwrightExtensionId];
+  return !!record && typeof record === 'object' && Object.keys(record).length > 0;
 }
 
 async function pathExists(p: string): Promise<boolean> {

@@ -16,7 +16,7 @@
  */
 
 import { assert } from '@isomorphic/assert';
-import { splitErrorMessage } from '@isomorphic/stackTrace';
+import { splitErrorMessage } from '@utils/stackTrace';
 import { eventsHelper } from '@utils/eventsHelper';
 import * as dialog from '../dialog';
 import * as dom from '../dom';
@@ -57,6 +57,8 @@ export class FFPage implements PageDelegate {
   private _initScripts: { initScript: InitScript, worldName?: string }[] = [];
   private _webSocketRequests = new Map<string, { url: string, headers: types.HeadersArray }>();
   private _webSocketResponses = new Map<string, { status: number, statusText: string, headers: types.HeadersArray }>();
+  // FIXME: remove this once Firefox is on wall clock.
+  private _screencastClockOffset = 0;
 
   constructor(session: FFSession, browserContext: FFBrowserContext, opener: FFPage | null) {
     this._session = session;
@@ -86,6 +88,7 @@ export class FFPage implements PageDelegate {
       eventsHelper.addEventListener(this._session, 'Page.uncaughtError', this._onUncaughtError.bind(this)),
       eventsHelper.addEventListener(this._session, 'Runtime.console', this._onConsole.bind(this)),
       eventsHelper.addEventListener(this._session, 'Page.dialogOpened', this._onDialogOpened.bind(this)),
+      eventsHelper.addEventListener(this._session, 'Page.dialogClosed', this._onDialogClosed.bind(this)),
       eventsHelper.addEventListener(this._session, 'Page.bindingCalled', this._onBindingCalled.bind(this)),
       eventsHelper.addEventListener(this._session, 'Page.fileChooserOpened', this._onFileChooserOpened.bind(this)),
       eventsHelper.addEventListener(this._session, 'Page.workerCreated', this._onWorkerCreated.bind(this)),
@@ -150,8 +153,8 @@ export class FFPage implements PageDelegate {
       url.protocol = url.protocol === 'https' ? 'wss' : 'ws';
 
       this._page.frameManager.onWebSocketCreated(requestId, url.toString());
-      this._page.frameManager.onWebSocketRequest(requestId, request.headers);
-      this._page.frameManager.onWebSocketResponse(requestId, response.status, response.statusText, response.headers);
+      this._page.frameManager.onWebSocketRequest(requestId, request);
+      this._page.frameManager.onWebSocketResponse(requestId, response);
       this._page.frameManager.webSocketClosed(requestId);
       return;
     }
@@ -167,8 +170,8 @@ export class FFPage implements PageDelegate {
     this._webSocketRequests.delete(event.requestId);
     this._webSocketResponses.delete(event.requestId);
 
-    this._page.frameManager.onWebSocketRequest(webSocketId(event.frameId, event.wsid), request.headers);
-    this._page.frameManager.onWebSocketResponse(webSocketId(event.frameId, event.wsid), response.status, response.statusText, response.headers);
+    this._page.frameManager.onWebSocketRequest(webSocketId(event.frameId, event.wsid), request);
+    this._page.frameManager.onWebSocketResponse(webSocketId(event.frameId, event.wsid), response);
   }
 
   _onWebSocketClosed(event: Protocol.Page.webSocketClosedPayload) {
@@ -295,6 +298,10 @@ export class FFPage implements PageDelegate {
         params.defaultValue));
   }
 
+  _onDialogClosed() {
+    this._page.browserContext.dialogManager.dialogWasClosedInBrowser(this._page);
+  }
+
   async _onBindingCalled(event: Protocol.Page.bindingCalledPayload) {
     const pageOrError = await this._page.waitForInitializedOrError();
     if (!(pageOrError instanceof Error)) {
@@ -409,7 +416,7 @@ export class FFPage implements PageDelegate {
   }
 
   async updateRequestInterception(): Promise<void> {
-    await this._networkManager.setRequestInterception(this._page.needsRequestInterception());
+    await this._networkManager.setRequestInterception(this._page.needsRequestInterception(), this._page.isStorageStatePage);
   }
 
   async updateFileChooserInterception() {
@@ -459,7 +466,7 @@ export class FFPage implements PageDelegate {
       throw new Error('Not implemented');
   }
 
-  async takeScreenshot(progress: Progress, format: 'png' | 'jpeg', documentRect: types.Rect | undefined, viewportRect: types.Rect | undefined, quality: number | undefined, fitsViewport: boolean, scale: 'css' | 'device'): Promise<Buffer> {
+  async takeScreenshot(progress: Progress, format: 'png' | 'jpeg' | 'webp', documentRect: types.Rect | undefined, viewportRect: types.Rect | undefined, quality: number | undefined, fitsViewport: boolean, scale: 'css' | 'device'): Promise<Buffer> {
     if (!documentRect) {
       const scrollOffset = await this._page.mainFrame().waitForFunctionValueInUtility(progress, () => ({ x: window.scrollX, y: window.scrollY }));
       documentRect = {
@@ -470,7 +477,7 @@ export class FFPage implements PageDelegate {
       };
     }
     const { data } = await progress.race(this._session.send('Page.screenshot', {
-      mimeType: ('image/' + format) as ('image/png' | 'image/jpeg'),
+      mimeType: ('image/' + format) as ('image/png' | 'image/jpeg' | 'image/webp'),
       clip: documentRect,
       quality,
       omitDeviceScaleFactor: scale === 'css',
@@ -539,12 +546,15 @@ export class FFPage implements PageDelegate {
 
   private _onScreencastFrame(event: Protocol.Page.screencastFramePayload) {
     const buffer = Buffer.from(event.data, 'base64');
-    this._page.screencast.onScreencastFrame({
+    // event.timestamp is monotonic seconds, anchor it to the wall clock at the first frame.
+    if (!this._screencastClockOffset)
+      this._screencastClockOffset = Date.now() - event.timestamp * 1000;
+    void this._page.screencast.onScreencastFrame({
       buffer,
-      frameSwapWallTime: event.timestamp * 1000, // timestamp is in seconds, we need to convert to milliseconds.
+      frameSwapWallTime: event.timestamp * 1000 + this._screencastClockOffset,
       viewportWidth: event.deviceWidth,
       viewportHeight: event.deviceHeight,
-    }, () => {
+    }).then(() => {
       this._session.sendMayFail('Page.screencastFrameAck');
     });
   }

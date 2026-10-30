@@ -16,25 +16,33 @@
 
 import * as z from 'zod';
 import { commands } from './commands';
+import { isVariadicArg } from './command';
 
 import type zodType from 'zod';
 import type { AnyCommandSchema, Category } from './command';
 
-type CommandArg = { name: string, description: string, optional: boolean };
+type CommandArg = { name: string, description: string, optional: boolean, variadic: boolean };
 
 function commandArgs(command: AnyCommandSchema): CommandArg[] {
   const args: CommandArg[] = [];
   const shape = command.args ? (command.args as zodType.ZodObject<any>).shape : {};
+  const names = Object.keys(shape);
   for (const [name, schema] of Object.entries(shape)) {
     const zodSchema = schema as zodType.ZodTypeAny;
     const description = zodSchema.description ?? '';
-    args.push({ name, description, optional: zodSchema.safeParse(undefined).success });
+    const variadic = name === names[names.length - 1] && isVariadicArg(zodSchema);
+    args.push({ name, description, optional: zodSchema.safeParse(undefined).success, variadic });
   }
   return args;
 }
 
+function commandArgText(a: CommandArg) {
+  const name = a.variadic ? `${a.name}...` : a.name;
+  return a.optional ? `[${name}]` : `<${name}>`;
+}
+
 function commandArgsText(args: CommandArg[]) {
-  return args.map(a => a.optional ? `[${a.name}]` : `<${a.name}>`).join(' ');
+  return args.map(commandArgText).join(' ');
 }
 
 function generateCommandHelp(command: AnyCommandSchema) {
@@ -48,7 +56,7 @@ function generateCommandHelp(command: AnyCommandSchema) {
 
   if (args.length) {
     lines.push('Arguments:');
-    lines.push(...args.map(a => formatWithGap(`  ${a.optional ? `[${a.name}]` : `<${a.name}>`}`, a.description.toLowerCase())));
+    lines.push(...args.map(a => formatWithGap(`  ${commandArgText(a)}`, a.description.toLowerCase())));
   }
 
   if (command.options) {
@@ -56,7 +64,10 @@ function generateCommandHelp(command: AnyCommandSchema) {
     const optionsShape = (command.options as zodType.ZodObject<any>).shape;
     for (const [name, schema] of Object.entries(optionsShape)) {
       const zodSchema = schema as zodType.ZodTypeAny;
-      const description = (zodSchema.description ?? '').toLowerCase();
+      let description = (zodSchema.description ?? '').toLowerCase();
+      const unwrapped = unwrapZodType(zodSchema);
+      if (unwrapped instanceof z.ZodEnum)
+        description = `${description} (one of: ${unwrapped.options.join(', ')})`.trim();
       lines.push(formatWithGap(`  --${name}`, description));
     }
   }
@@ -72,8 +83,10 @@ const categories: { name: Category, title: string }[] = [
   { name: 'export', title: 'Save as' },
   { name: 'tabs', title: 'Tabs' },
   { name: 'storage', title: 'Storage' },
+  { name: 'emulation', title: 'Emulation' },
   { name: 'network', title: 'Network' },
   { name: 'devtools', title: 'DevTools' },
+  { name: 'webmcp', title: 'WebMCP' },
   { name: 'install', title: 'Install' },
   { name: 'config', title: 'Configuration' },
   { name: 'browsers', title: 'Browser sessions' },
@@ -162,7 +175,7 @@ function isBooleanSchema(schema: zodType.ZodTypeAny): boolean {
 export function generateHelpJSON() {
   const booleanOptions = new Set<string>();
 
-  const commandEntries: Record<string, { help: string, flags: Record<string, 'boolean' | 'string'>, args: string[], raw?: boolean }> = {};
+  const commandEntries: Record<string, { help: string, flags: Record<string, 'boolean' | 'string'>, args: string[], variadicArg?: boolean, raw?: boolean }> = {};
   for (const [name, command] of Object.entries(commands)) {
     const flags: Record<string, 'boolean' | 'string'> = {};
     if (command.options) {
@@ -174,8 +187,10 @@ export function generateHelpJSON() {
           booleanOptions.add(flagName);
       }
     }
-    const args: string[] = command.args ? Object.keys((command.args as zodType.ZodObject<any>).shape) : [];
-    commandEntries[name] = { help: generateCommandHelp(command), flags, args };
+    const args = commandArgs(command);
+    commandEntries[name] = { help: generateCommandHelp(command), flags, args: args.map(a => a.name) };
+    if (args.some(a => a.variadic))
+      commandEntries[name].variadicArg = true;
     if (command.raw)
       commandEntries[name].raw = true;
   }

@@ -157,11 +157,13 @@ class HtmlReporter implements ReporterV2 {
     const noSnippets = parseBooleanEnvVar('PLAYWRIGHT_HTML_NO_SNIPPETS') ?? this._options.noSnippets;
     const noCopyPrompt = parseBooleanEnvVar('PLAYWRIGHT_HTML_NO_COPY_PROMPT') ?? this._options.noCopyPrompt;
     const doNotInlineAssets = parseBooleanEnvVar('PLAYWRIGHT_HTML_DO_NOT_INLINE_ASSETS') ?? this._options.doNotInlineAssets ?? false;
+    const mergeFiles = parseBooleanEnvVar('PLAYWRIGHT_HTML_MERGE_FILES') ?? this._options.mergeFiles;
 
     const builder = new HtmlBuilder(yazl, this.config, this._outputFolder, this._attachmentsBaseURL, doNotInlineAssets, {
       title: process.env.PLAYWRIGHT_HTML_TITLE || this._options.title,
       noSnippets,
       noCopyPrompt,
+      mergeFiles,
     });
     this._buildResult = await builder.build(this.config.metadata, projectSuites, result, this._topLevelErrors, this._machines);
   }
@@ -175,7 +177,10 @@ class HtmlReporter implements ReporterV2 {
       await showHTMLReport(this._outputFolder, this._host, this._port, singleTestId);
     } else if (this._options._mode === 'test' && !!process.stdin.isTTY) {
       const packageManagerCommand = getPackageManagerExecCommand();
-      const relativeReportPath = this._outputFolder === standaloneDefaultFolder() ? '' : ' ' + path.relative(process.cwd(), this._outputFolder);
+      // npm sets INIT_CWD to "the full path you were in when you ran npm run".
+      const invocationDir = process.env.INIT_CWD || process.cwd();
+      const isDefaultFolder = invocationDir === process.cwd() && this._outputFolder === standaloneDefaultFolder();
+      const relativeReportPath = isDefaultFolder ? '' : ' ' + (path.relative(invocationDir, this._outputFolder) || '.');
       const hostArg = this._host ? ` --host ${this._host}` : '';
       const portArg = this._port ? ` --port ${this._port}` : '';
       writeLine('');
@@ -667,6 +672,7 @@ class HtmlBuilder {
       title = `${title} (skipped${skipped.description ? ': ' + skipped.description : ''})`;
     const testStep: TestStep = {
       title,
+      subtitle: step.subtitle,
       startTime: step.startTime.toISOString(),
       duration,
       steps: dedupeSteps(step.steps).map(s => this._createTestStep(s, result)),
@@ -772,7 +778,7 @@ function dedupeSteps(steps: api.TestStep[]) {
   for (const step of steps) {
     const canDedupe = !step.error && step.duration >= 0 && step.location?.file && !step.steps.length;
     const lastStep = lastResult?.step;
-    if (canDedupe && lastResult && lastStep && step.category === lastStep.category && step.title === lastStep.title && step.location?.file === lastStep.location?.file && step.location?.line === lastStep.location?.line && step.location?.column === lastStep.location?.column) {
+    if (canDedupe && lastResult && lastStep && step.category === lastStep.category && step.title === lastStep.title && step.subtitle === lastStep.subtitle && step.location?.file === lastStep.location?.file && step.location?.line === lastStep.location?.line && step.location?.column === lastStep.location?.column) {
       ++lastResult.count;
       lastResult.duration += step.duration;
       continue;

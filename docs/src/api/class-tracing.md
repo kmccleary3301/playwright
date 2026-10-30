@@ -70,8 +70,9 @@ await context.Tracing.StopAsync(new()
 
 ## async method: Tracing.start
 * since: v1.12
+- returns: <[Disposable]>
 
-Start tracing.
+Start tracing. Disposing the returned [Disposable] stops tracing without saving the trace, similarly to calling [`method: Tracing.stop`] without a path.
 
 :::note
 You probably want to [enable tracing in your config file](https://playwright.dev/docs/api/class-testoptions#test-options-trace) instead of using `Tracing.start`.
@@ -148,11 +149,34 @@ a timeline preview.
 
 ### option: Tracing.start.snapshots
 * since: v1.12
+* langs: js
+- `snapshots` <[boolean]|[Object]>
+  - `dom` ?<[boolean]> Capture DOM snapshot on every action and record network activity. Optional.
+  - `aria` ?<[boolean]> Capture aria snapshot of the page on every action. Optional.
+  - `screen` ?<[boolean]> Capture a screenshot of the page on every action. Optional.
+
+Which snapshots to capture on every action. Passing `true` is a shortcut for `{ dom: true }`.
+
+### option: Tracing.start.snapshots
+* since: v1.12
+* langs: java, python, csharp
 - `snapshots` <[boolean]>
 
-If this option is true tracing will
-* capture DOM snapshot on every action
-* record network activity
+Whether to capture DOM snapshot and record network activity on every action.
+
+### option: Tracing.start.ariaSnapshots
+* since: v1.63
+* langs: java, python, csharp
+- `ariaSnapshots` <[boolean]>
+
+Whether to capture aria snapshot of the page on every action.
+
+### option: Tracing.start.screenSnapshots
+* since: v1.63
+* langs: java, python, csharp
+- `screenSnapshots` <[boolean]>
+
+Whether to capture a screenshot of the page on every action.
 
 ### option: Tracing.start.sources
 * since: v1.17
@@ -186,8 +210,9 @@ viewing during test execution.
 
 ## async method: Tracing.startChunk
 * since: v1.15
+- returns: <[Disposable]>
 
-Start a new trace chunk. If you'd like to record multiple traces on the same [BrowserContext], use [`method: Tracing.start`] once, and then create multiple trace chunks with [`method: Tracing.startChunk`] and [`method: Tracing.stopChunk`].
+Start a new trace chunk. Disposing the returned [Disposable] stops the chunk without saving it, similarly to calling [`method: Tracing.stopChunk`] without a path. If you'd like to record multiple traces on the same [BrowserContext], use [`method: Tracing.start`] once, and then create multiple trace chunks with [`method: Tracing.startChunk`] and [`method: Tracing.stopChunk`].
 
 **Usage**
 
@@ -309,7 +334,7 @@ To specify the final trace zip file name, you need to pass `path` option to
 
 Start recording a HAR (HTTP Archive) of network activity in this context. The HAR file is written to disk when [`method: Tracing.stopHar`] is called, or when the returned [Disposable] is disposed.
 
-Only one HAR recording can be active at a time per [BrowserContext].
+Only one HAR recording can be active at a time per [Tracing] instance.
 
 **Usage**
 

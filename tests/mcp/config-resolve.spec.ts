@@ -18,12 +18,24 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
+import { Command } from 'commander';
+
 import { test, expect } from './fixtures';
 
 import { tools } from '../../packages/playwright-core/lib/coreBundle';
 import type { Config } from '../../packages/playwright-core/src/tools/mcp/config.d';
 
-const { resolveCLIConfigForCLI, resolveCLIConfigForMCP, isSystemDirectory, outputDir } = tools;
+const { decorateMCPCommand, resolveCLIConfigForCLI, resolveCLIConfigForMCP, isSystemDirectory, outputDir } = tools;
+
+// Parses the command line the same way the mcp server entry point does, without starting the server.
+async function parseCLIOptions(argv: string[]): Promise<any> {
+  const command = new Command();
+  decorateMCPCommand(command);
+  let options: any;
+  command.action(o => { options = o; });
+  await command.parseAsync(argv, { from: 'user' });
+  return options;
+}
 
 // Empty env to isolate tests from the host environment.
 const emptyEnv = {};
@@ -83,6 +95,25 @@ test.describe('browserName and channel', () => {
     expect(config.browser.launchOptions.channel).toBeUndefined();
   });
 
+  test('malformed JSON config throws instead of falling back to INI', {
+    annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/41893' },
+  }, async ({}, testInfo) => {
+    const configFile = testInfo.outputPath('config.json');
+    // Trailing comma makes this invalid JSON; it must not be silently parsed as INI.
+    await fs.promises.writeFile(configFile, '{ "browser": { "browserName": "firefox", } }');
+    await expect(resolveCLIConfigForMCP({ config: configFile }, emptyEnv)).rejects.toThrow();
+  });
+
+  test('INI config starting with a section header still parses', {
+    annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/41893' },
+  }, async ({}, testInfo) => {
+    const configFile = testInfo.outputPath('config.cfg');
+    // A leading `[section]` is INI, not JSON — it must not be treated as malformed JSON.
+    await fs.promises.writeFile(configFile, '[browser]\nbrowserName = firefox\n');
+    const config = await resolveCLIConfigForMCP({ config: configFile }, emptyEnv);
+    expect(config.browser.browserName).toBe('firefox');
+  });
+
   test('config file browserName + channel are both preserved', async ({}, testInfo) => {
     const configFile = testInfo.outputPath('config.json');
     const fileConfig: Config = {
@@ -107,6 +138,11 @@ test.describe('browserName and channel', () => {
 // ---------------------------------------------------------------------------
 
 test.describe('sandbox', () => {
+  test('chromium sandbox enabled by default', async () => {
+    const config = await resolveCLIConfigForMCP({}, emptyEnv);
+    expect(config.browser.launchOptions.chromiumSandbox).toBe(true);
+  });
+
   test('chromium sandbox enabled for chrome channel', async () => {
     const config = await resolveCLIConfigForMCP({ browser: 'chrome' }, emptyEnv);
     expect(config.browser.launchOptions.chromiumSandbox).toBe(true);
@@ -115,6 +151,19 @@ test.describe('sandbox', () => {
   test('chromium sandbox for chrome-for-testing channel', async () => {
     const config = await resolveCLIConfigForMCP({ browser: 'chromium' }, emptyEnv);
     expect(config.browser.launchOptions.channel).toBe('chrome-for-testing');
+    if (process.platform === 'linux')
+      expect(config.browser.launchOptions.chromiumSandbox).toBe(false);
+    else
+      expect(config.browser.launchOptions.chromiumSandbox).toBe(true);
+  });
+
+  test('chromium sandbox disabled for browserName chromium without channel', {
+    annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42452' },
+  }, async ({}, testInfo) => {
+    const configFile = testInfo.outputPath('config.json');
+    await fs.promises.writeFile(configFile, JSON.stringify({ browser: { browserName: 'chromium' } }));
+    const config = await resolveCLIConfigForMCP({ config: configFile }, emptyEnv);
+    expect(config.browser.launchOptions.channel).toBeUndefined();
     if (process.platform === 'linux')
       expect(config.browser.launchOptions.chromiumSandbox).toBe(false);
     else
@@ -134,6 +183,22 @@ test.describe('sandbox', () => {
   test('explicit --no-sandbox overrides default', async () => {
     const config = await resolveCLIConfigForMCP({ browser: 'chrome', sandbox: false }, emptyEnv);
     expect(config.browser.launchOptions.chromiumSandbox).toBe(false);
+  });
+
+  test('--sandbox on the command line enables the sandbox', async () => {
+    const config = await resolveCLIConfigForMCP(await parseCLIOptions(['--browser=chromium', '--sandbox']), emptyEnv);
+    expect(config.browser.launchOptions.channel).toBe('chrome-for-testing');
+    expect(config.browser.launchOptions.chromiumSandbox).toBe(true);
+  });
+
+  test('--no-sandbox on the command line disables the sandbox', async () => {
+    const config = await resolveCLIConfigForMCP(await parseCLIOptions(['--browser=chrome', '--no-sandbox']), emptyEnv);
+    expect(config.browser.launchOptions.chromiumSandbox).toBe(false);
+  });
+
+  test('no sandbox flag on the command line leaves the value unset', async () => {
+    const options = await parseCLIOptions(['--browser=chrome']);
+    expect(options.sandbox).toBeUndefined();
   });
 });
 
@@ -186,6 +251,65 @@ test.describe('viewport', () => {
     await fs.promises.writeFile(configFile, JSON.stringify(fileConfig));
     const config = await resolveCLIConfigForMCP({ config: configFile, headless: true }, emptyEnv);
     expect(config.browser.contextOptions.viewport).toEqual({ width: 640, height: 480 });
+  });
+});
+
+test('config file preserves context media preferences', async ({}, testInfo) => {
+  const configFile = testInfo.outputPath('config.json');
+  const fileConfig: Config = {
+    browser: {
+      contextOptions: {
+        colorScheme: 'dark',
+        contrast: 'more',
+        forcedColors: 'active',
+        reducedMotion: 'reduce',
+      },
+    },
+  };
+  await fs.promises.writeFile(configFile, JSON.stringify(fileConfig));
+  const config = await resolveCLIConfigForMCP({ config: configFile }, emptyEnv);
+  expect(config.browser.contextOptions).toMatchObject(fileConfig.browser!.contextOptions!);
+});
+
+test.describe('mobile', () => {
+  test('--mobile defaults to a Chromium mobile device', async () => {
+    const config = await resolveCLIConfigForMCP({ mobile: true }, emptyEnv);
+    expect(config.browser.contextOptions.isMobile).toBe(true);
+    expect(config.browser.contextOptions.userAgent).toContain('Pixel 10');
+  });
+
+  test('--mobile with a Chromium channel picks a Chromium mobile device', async () => {
+    const config = await resolveCLIConfigForMCP({ mobile: true, browser: 'msedge' }, emptyEnv);
+    expect(config.browser.contextOptions.isMobile).toBe(true);
+    expect(config.browser.contextOptions.userAgent).toContain('Pixel 10');
+  });
+
+  test('--mobile with WebKit picks a WebKit mobile device', async () => {
+    const config = await resolveCLIConfigForMCP({ mobile: true, browser: 'webkit' }, emptyEnv);
+    expect(config.browser.contextOptions.isMobile).toBe(true);
+    expect(config.browser.contextOptions.userAgent).toContain('iPhone');
+  });
+
+  test('explicit viewport still wins over --mobile', async () => {
+    const config = await resolveCLIConfigForMCP({ mobile: true, viewportSize: { width: 800, height: 600 } }, emptyEnv);
+    expect(config.browser.contextOptions.isMobile).toBe(true);
+    expect(config.browser.contextOptions.viewport).toEqual({ width: 800, height: 600 });
+  });
+
+  test('--mobile via env var', async () => {
+    const config = await resolveCLIConfigForMCP({}, { PLAYWRIGHT_MCP_MOBILE: '1' });
+    expect(config.browser.contextOptions.isMobile).toBe(true);
+    expect(config.browser.contextOptions.userAgent).toContain('Pixel 10');
+  });
+
+  test('--mobile is rejected with Firefox', async () => {
+    await expect(resolveCLIConfigForMCP({ mobile: true, browser: 'firefox' }, emptyEnv))
+        .rejects.toThrow('--mobile is not supported with the Firefox browser.');
+  });
+
+  test('--mobile cannot be combined with --device', async () => {
+    await expect(resolveCLIConfigForMCP({ mobile: true, device: 'iPhone 15' }, emptyEnv))
+        .rejects.toThrow('Cannot use --mobile together with --device');
   });
 });
 
@@ -348,10 +472,21 @@ test.describe('resolveCLIConfigForMCP', () => {
   });
 
   test('cli timeout overrides defaults', async () => {
-    const config = await resolveCLIConfigForMCP({ timeoutAction: 10000, timeoutNavigation: 30000 }, emptyEnv);
+    const config = await resolveCLIConfigForMCP({ timeoutAction: 10000, timeoutNavigation: 30000, idleTimeout: 60000 }, emptyEnv);
     expect(config.timeouts.action).toBe(10000);
     expect(config.timeouts.navigation).toBe(30000);
     expect(config.timeouts.expect).toBe(5000);
+    expect(config.timeouts.idle).toBe(60000);
+  });
+
+  test('idle timeout is unset by default and comes from the config file or env', async ({}, testInfo) => {
+    expect((await resolveCLIConfigForMCP({}, emptyEnv)).timeouts.idle).toBeUndefined();
+
+    const configFile = testInfo.outputPath('config.json');
+    await fs.promises.writeFile(configFile, JSON.stringify({ timeouts: { idle: 1000 } }));
+    expect((await resolveCLIConfigForMCP({ config: configFile }, emptyEnv)).timeouts.idle).toBe(1000);
+
+    expect((await resolveCLIConfigForMCP({ config: configFile }, { ...emptyEnv, PLAYWRIGHT_MCP_IDLE_TIMEOUT: '2000' })).timeouts.idle).toBe(2000);
   });
 
   test('cli timeout overrides config file timeout', async ({}, testInfo) => {

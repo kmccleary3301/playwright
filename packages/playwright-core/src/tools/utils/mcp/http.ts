@@ -22,12 +22,13 @@ import crypto from 'crypto';
 import debug from 'debug';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { urlHostFromAddress } from '@utils/httpServer';
+import { isUnderTest } from '@utils/debug';
 import { createHttpServer, startHttpServer } from '@utils/network';
+import { ManualPromise } from '@isomorphic/manualPromise';
 
 import * as mcpServer from './server';
 
-import type { ServerBackendFactory } from './server';
+import type { ServerBackendFactory, ServerSessionOptions } from './server';
 import type { SSEServerTransport as SSEServerTransportType } from '@modelcontextprotocol/sdk/server/sse.js';
 import type { StreamableHTTPServerTransport as StreamableHTTPServerTransportType } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 
@@ -40,40 +41,29 @@ export async function startMcpHttpServer(
 ): Promise<string> {
   const httpServer = createHttpServer();
   await startHttpServer(httpServer, config);
-  return await installHttpTransport(httpServer, serverBackendFactory, allowedHosts);
-}
-
-export function addressToString(address: string | net.AddressInfo | null, options: {
-  protocol: 'http' | 'ws';
-  normalizeLoopback?: boolean;
-}): string {
+  const address = httpServer.address();
   assert(address, 'Could not bind server socket');
   if (typeof address === 'string')
     throw new Error('Unexpected address type: ' + address);
-  let host = urlHostFromAddress(address);
-  if (options.normalizeLoopback && (host === '0.0.0.0' || host === '[::]' || host === '[::1]' || host === '127.0.0.1'))
-    host = 'localhost';
-  return `${options.protocol}://${host}:${address.port}`;
+  const bindHost = config.host;
+  const host = !bindHost || bindHost === '0.0.0.0' || bindHost === '::' ? 'localhost' : net.isIPv6(bindHost) ? `[${bindHost}]` : bindHost;
+  const url = `http://${host}:${address.port}`;
+  // Loopback names cannot be rebound, so they are safe to allow for any bind address. The host passed via --host is chosen by the user.
+  allowedHosts = allowedHosts?.map(h => h.toLowerCase()) ?? [...new Set([`localhost:${address.port}`, `127.0.0.1:${address.port}`, `[::1]:${address.port}`, new URL(url).host])];
+  installHttpTransport(httpServer, serverBackendFactory, allowedHosts);
+  return url;
 }
 
-async function installHttpTransport(httpServer: http.Server, serverBackendFactory: ServerBackendFactory, allowedHosts?: string[]) {
-  const url = addressToString(httpServer.address(), { protocol: 'http', normalizeLoopback: true });
-  const host = new URL(url).host;
-  allowedHosts = (allowedHosts || [host]).map(h => h.toLowerCase());
+function installHttpTransport(httpServer: http.Server, serverBackendFactory: ServerBackendFactory, allowedHosts: string[]) {
   const allowAnyHost = allowedHosts.includes('*');
 
   const sseSessions = new Map();
   const streamableSessions = new Map();
   httpServer.on('request', async (req, res) => {
     if (!allowAnyHost) {
+      // Prevent DNS evil.com -> localhost rebind. Browsers always send Host, requests without it are not affected.
       const host = req.headers.host?.toLowerCase();
-      if (!host) {
-        res.statusCode = 400;
-        return res.end('Missing host');
-      }
-
-      // Prevent DNS evil.com -> localhost rebind.
-      if (!allowedHosts.includes(host)) {
+      if (host && !allowedHosts.includes(host)) {
         // Access from the browser is forbidden.
         res.statusCode = 403;
         return res.end('Access is only allowed at ' + allowedHosts.join(', '));
@@ -81,14 +71,7 @@ async function installHttpTransport(httpServer: http.Server, serverBackendFactor
     }
 
     const url = new URL(`http://localhost${req.url}`);
-    if (url.pathname === '/killkillkill') {
-      // Require POST plus a custom header to prevent cross-origin CSRF
-      // (a browser-coerced <img> GET or simple <form> POST can't add custom headers,
-      // and any cross-origin request with custom headers is blocked by CORS preflight).
-      if (req.method !== 'POST' || req.headers['x-pw-mcp-kill'] !== '1') {
-        res.statusCode = 405;
-        return res.end();
-      }
+    if (url.pathname === '/killkillkill' && isUnderTest()) {
       res.statusCode = 200;
       res.end('Killing process');
       // Simulate Ctrl+C in a way that works on Windows too.
@@ -100,8 +83,6 @@ async function installHttpTransport(httpServer: http.Server, serverBackendFactor
     else
       await handleStreamable(serverBackendFactory, req, res, streamableSessions);
   });
-
-  return url;
 }
 
 async function handleSSE(serverBackendFactory: ServerBackendFactory, req: http.IncomingMessage, res: http.ServerResponse, url: URL, sessions: Map<string, SSEServerTransportType>) {
@@ -120,10 +101,15 @@ async function handleSSE(serverBackendFactory: ServerBackendFactory, req: http.I
 
     return await transport.handlePostMessage(req, res);
   } else if (req.method === 'GET') {
+    const { sessionOptions, error } = parseSessionOptions(url, serverBackendFactory);
+    if (error) {
+      res.statusCode = 400;
+      return res.end(error);
+    }
     const transport = new SSEServerTransport('/sse', res);
     sessions.set(transport.sessionId, transport);
     testDebug(`create SSE session`);
-    await mcpServer.connect(serverBackendFactory, transport, false);
+    await mcpServer.connect(serverBackendFactory, transport, Promise.resolve(), false, sessionOptions);
     res.on('close', () => {
       testDebug(`delete SSE session`);
       sessions.delete(transport.sessionId);
@@ -135,25 +121,38 @@ async function handleSSE(serverBackendFactory: ServerBackendFactory, req: http.I
   res.end('Method not allowed');
 }
 
-async function handleStreamable(serverBackendFactory: ServerBackendFactory, req: http.IncomingMessage, res: http.ServerResponse, sessions: Map<string, StreamableHTTPServerTransportType>) {
+async function handleStreamable(serverBackendFactory: ServerBackendFactory, req: http.IncomingMessage, res: http.ServerResponse, sessions: Map<string, { transport: StreamableHTTPServerTransportType, transportInitialized: ManualPromise<void> }>) {
   const sessionId = req.headers['mcp-session-id'] as string | undefined;
   if (sessionId) {
-    const transport = sessions.get(sessionId);
-    if (!transport) {
+    const sessionInfo = sessions.get(sessionId);
+    if (!sessionInfo) {
       res.statusCode = 404;
       res.end('Session not found');
       return;
     }
-    return await transport.handleRequest(req, res);
+    if (req.method === 'GET') {
+      // As per spec, GET is for the event stream only, when we see it consider transport bidirectionally ready.
+      const streamResponse = sessionInfo.transport.handleRequest(req, res);
+      sessionInfo.transportInitialized.resolve();
+      return streamResponse;
+    }
+    return sessionInfo.transport.handleRequest(req, res);
   }
 
   if (req.method === 'POST') {
+    const { sessionOptions, error } = parseSessionOptions(new URL(`http://localhost${req.url}`), serverBackendFactory);
+    if (error) {
+      res.statusCode = 400;
+      res.end(error);
+      return;
+    }
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => crypto.randomUUID(),
       onsessioninitialized: async sessionId => {
         testDebug(`create http session`);
-        await mcpServer.connect(serverBackendFactory, transport, true);
-        sessions.set(sessionId, transport);
+        const sessionInfo = { transport, transportInitialized: new ManualPromise<void>() };
+        sessions.set(sessionId, sessionInfo);
+        await mcpServer.connect(serverBackendFactory, sessionInfo.transport, sessionInfo.transportInitialized, true, sessionOptions);
       }
     });
 
@@ -170,4 +169,21 @@ async function handleStreamable(serverBackendFactory: ServerBackendFactory, req:
 
   res.statusCode = 400;
   res.end('Invalid request');
+}
+function parseSessionOptions(url: URL, factory: ServerBackendFactory): { sessionOptions?: ServerSessionOptions, error?: string } {
+  const enabledCapabilities = factory.enabledCapabilities ?? [];
+  if (!url.searchParams.has('caps')) {
+    return {
+      sessionOptions: factory.enabledCapabilities ? { capabilities: enabledCapabilities } : undefined,
+    };
+  }
+
+  const requestedCapabilities = new Set(url.searchParams.getAll('caps').flatMap(value => value.split(',').map(capability => capability.trim()).filter(Boolean)));
+  const unsupportedCapabilities = [...requestedCapabilities].filter(requested => !enabledCapabilities.some(enabled => enabled === requested));
+  if (unsupportedCapabilities.length) {
+    const allowed = enabledCapabilities.length ? enabledCapabilities.join(', ') : '(none)';
+    return { error: `Unsupported caps: ${unsupportedCapabilities.join(', ')}. Allowed caps: ${allowed}` };
+  }
+
+  return { sessionOptions: { capabilities: enabledCapabilities.filter(capability => requestedCapabilities.has(capability)) } };
 }

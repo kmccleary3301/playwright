@@ -90,7 +90,7 @@ async function run() {
 
   // Update device descriptors
   {
-    const devicesDescriptorsSourceFile = path.join(PROJECT_DIR, 'packages', 'playwright-core', 'src', 'server', 'deviceDescriptorsSource.json')
+    const devicesDescriptorsSourceFile = path.join(PROJECT_DIR, 'packages', 'isomorphic', 'deviceDescriptorsSource.json')
     const devicesDescriptors = require(devicesDescriptorsSourceFile)
     for (const deviceName of Object.keys(devicesDescriptors)) {
       switch (devicesDescriptors[deviceName].defaultBrowserType) {
@@ -203,6 +203,7 @@ async function run() {
                   'css',
                   'js',
                   'markdown',
+                  'mermaid',
                   'ts',
                   'python',
                   'py',
@@ -269,6 +270,11 @@ async function run() {
   }
 
   if (dirtyFiles.size) {
+    if (process.argv.includes('--allow-dirty')) {
+      console.log('Regenerated files:');
+      [...dirtyFiles].forEach(f => console.log(f));
+      process.exit(0);
+    }
     console.log('============================')
     console.log('ERROR: generated files have changed, this is only error if happens in CI:');
     [...dirtyFiles].forEach(f => console.log(f));

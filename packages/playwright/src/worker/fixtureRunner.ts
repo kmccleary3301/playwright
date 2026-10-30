@@ -16,14 +16,16 @@
 
 import { ManualPromise } from '@isomorphic/manualPromise';
 import { escapeWithQuotes } from '@isomorphic/stringUtils';
+import { filterStackFile } from '@utils/stackTrace';
 
 import { fixtures } from '../common';
-import { filterStackFile, formatLocation } from '../util';
+import { formatLocation } from '../util';
 
 import type { TestInfoImpl } from './testInfo';
 import type { FixtureDescription, RunnableDescription } from './timeoutManager';
 import type { WorkerInfo } from '../../types/test';
 import type { Location } from '../../types/testReporter';
+import type { StackFrame } from '@utils/stackTrace';
 
 class Fixture {
   runner: FixtureRunner;
@@ -35,7 +37,7 @@ class Fixture {
   private _selfTeardownComplete: Promise<void> | undefined;
   private _setupDescription: FixtureDescription;
   private _teardownDescription: FixtureDescription;
-  private _stepInfo: { title: string, category: 'fixture', location?: Location, group?: string } | undefined;
+  private _stepInfo: { title: string, category: 'fixture', stack?: StackFrame[], group?: string } | undefined;
   _deps = new Set<Fixture>();
   _usages = new Set<Fixture>();
 
@@ -46,7 +48,7 @@ class Fixture {
     const isUserFixture = this.registration.location && filterStackFile(this.registration.location.file);
     const title = this.registration.customTitle || this.registration.name;
     const location = isUserFixture ? this.registration.location : undefined;
-    this._stepInfo = { title: `Fixture ${escapeWithQuotes(title, '"')}`, category: 'fixture', location };
+    this._stepInfo = { title: `Fixture ${escapeWithQuotes(title, '"')}`, category: 'fixture', stack: location ? [location] : undefined };
     if (this.registration.box === 'self')
       this._stepInfo = undefined;
     else if (this.registration.box)

@@ -19,7 +19,7 @@ import util from 'util';
 import { serializeCompilationCache } from '../transform/compilationCache';
 
 import type { ConfigLocation, FullConfigInternal } from './config';
-import type { ReporterDescription, TestInfoError, TestStatus } from '../../types/test';
+import type { ReporterDescription, TestInfoError, TestStatus, TestAnnotation } from '../../types/test';
 import type { SerializedCompilationCache  } from '../transform/compilationCache';
 
 export type ConfigCLIOverrides = {
@@ -36,11 +36,13 @@ export type ConfigCLIOverrides = {
   repeatEach?: number;
   retries?: number;
   reporter?: ReporterDescription[];
+  additionalReporters?: ReporterDescription[];
   shard?: { current: number, total: number };
+  shuffle?: string;
   timeout?: number;
   tsconfig?: string;
   ignoreSnapshots?: boolean;
-  updateSnapshots?: 'all' | 'changed' | 'missing' | 'none';
+  updateSnapshots?: 'all' | 'changed' | 'missing' | 'none' | 'default';
   updateSourceMethod?: 'overwrite' | 'patch' | '3way';
   workers?: number | string;
   projects?: { name: string, use?: any }[],
@@ -56,7 +58,6 @@ export type SerializedConfig = {
 
 export type ProcessInitParams = {
   timeOrigin: number;
-  processName: string;
 };
 
 export type WorkerInitParams = {
@@ -116,7 +117,7 @@ export type TestEndPayload = {
   errors: TestInfoErrorPayload[];
   hasNonRetriableError: boolean;
   expectedStatus: TestStatus;
-  annotations: { type: string, description?: string }[];
+  annotations: TestAnnotation[];
   timeout: number;
 };
 
@@ -125,7 +126,9 @@ export type StepBeginPayload = {
   stepId: string;
   parentStepId: string | undefined;
   title: string;
+  subtitle?: string;
   category: string;
+  params?: Record<string, any>;
   wallTime: number;  // milliseconds since unix epoch
   location?: { file: string, line: number, column: number };
 };
@@ -136,12 +139,13 @@ export type StepEndPayload = {
   wallTime: number;  // milliseconds since unix epoch
   error?: TestInfoErrorPayload;
   suggestedRebaseline?: string;
-  annotations: { type: string, description?: string }[];
+  annotations: TestAnnotation[];
 };
 
 export type TestEntry = {
   testId: string;
   retry: number;
+  planAnnotations: TestAnnotation[];
 };
 
 export type RunPayload = {

@@ -15,18 +15,18 @@
  */
 
 import { getMetainfo } from '@isomorphic/protocolMetainfo';
-import { showInternalStackFrames, stringifyStackFrames } from '@isomorphic/stackTrace';
+import { showInternalStackFrames, stringifyStackFrames } from '@utils/stackTrace';
 import { isUnderTest } from '@utils/debug';
 import { debugLogger } from '@utils/debugLogger';
 import { currentZone } from '@utils/zones';
+import { ValidationError, maybeFindValidator } from '@protocol/validator';
 import { EventEmitter } from './eventEmitter';
-import { ValidationError, maybeFindValidator  } from '../protocol/validator';
 import { captureLibraryStackTrace } from './clientStackTrace';
 
 import type { ClientInstrumentation } from './clientInstrumentation';
 import type { Connection } from './connection';
 import type { Logger } from './types';
-import type { ValidatorContext } from '../protocol/validator';
+import type { ValidatorContext } from '@protocol/validator';
 import type * as channels from './channels';
 
 type Listener = (...args: any[]) => void;
@@ -116,6 +116,16 @@ export abstract class ChannelOwner<T extends channels.Channel = channels.Channel
     child._parent = this;
   }
 
+  _parentOfType(type: string): ChannelOwner<any> | undefined {
+    let parent: ChannelOwner<any> | undefined = this._parent;
+    while (parent) {
+      if (parent._type === type)
+        return parent;
+      parent = parent._parent;
+    }
+    return undefined;
+  }
+
   _dispose(reason: 'gc' | undefined) {
     // Clean up from parent and connection.
     if (this._parent)
@@ -151,19 +161,20 @@ export abstract class ChannelOwner<T extends channels.Channel = channels.Channel
           const validator = maybeFindValidator(this._type, prop, 'Params');
           const { internal } = getMetainfo({ type: this._type, method: prop }) || {};
           if (validator) {
-            return async (params: any) => {
+            return async (params: any, options: { signal?: AbortSignal, timeout?: number } = {}) => {
               return await this._wrapApiCall(async apiZone => {
                 const validatedParams = validator(params, '', this._validatorToWireContext());
+                const { signal, timeout = 0 } = options;
                 if (!apiZone.internal && !apiZone.reported) {
                   // Reporting/tracing/logging this api call for the first time.
                   apiZone.reported = true;
                   this._instrumentation.onApiCallBegin(apiZone, { type: this._type, method: prop, params });
                   logApiCall(this._logger, `=> ${apiZone.apiName} started`);
-                  return await this._connection.sendMessageToServer(this, prop, validatedParams, apiZone);
+                  return await this._connection.sendMessageToServer(this, prop, validatedParams, { ...apiZone, signal, timeout });
                 }
                 // Since this api call is either internal, or has already been reported/traced once,
                 // passing as internal.
-                return await this._connection.sendMessageToServer(this, prop, validatedParams, { internal: true });
+                return await this._connection.sendMessageToServer(this, prop, validatedParams, { internal: true, signal, timeout });
               }, { internal });
             };
           }
@@ -182,7 +193,10 @@ export abstract class ChannelOwner<T extends channels.Channel = channels.Channel
       return await func(existingApiZone);
 
     const stackTrace = captureLibraryStackTrace();
-    const apiZone: ApiZone = { title: options?.title, apiName: stackTrace.apiName, frames: stackTrace.frames, internal: options?.internal ?? false, reported: false, userData: undefined, stepId: undefined };
+    let apiName = stackTrace.apiName;
+    if (apiName.startsWith('_') || apiName.includes('._'))
+      apiName = options?.title ?? apiName;
+    const apiZone: ApiZone = { title: options?.title, apiName, frames: stackTrace.frames, internal: options?.internal ?? false, reported: false, userData: undefined, callId: undefined };
 
     try {
       const result = await currentZone().with('apiZone', apiZone).run(async () => await func(apiZone));
@@ -240,6 +254,6 @@ type ApiZone = {
   internal?: boolean;
   reported: boolean;
   userData: any;
-  stepId?: string;
+  callId?: string;
   error?: Error;
 };

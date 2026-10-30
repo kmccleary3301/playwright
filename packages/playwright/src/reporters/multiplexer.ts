@@ -16,7 +16,7 @@
 
 import { serializeError } from '../util';
 
-import type { ReportConfigureParams, ReportEndParams, ReporterV2 } from './reporterV2';
+import type { ReportConfigureParams, ReportEndParams, ReporterPreprocessParams, ReporterV2 } from './reporterV2';
 import type { FullConfig, FullResult, TestCase, TestError, TestResult, TestStep, WorkerInfo } from '../../types/testReporter';
 import type { test } from '../common';
 
@@ -39,6 +39,15 @@ export class Multiplexer implements ReporterV2 {
   onConfigure(config: FullConfig) {
     for (const reporter of this._reporters)
       this._wrap(() => reporter.onConfigure?.(config));
+  }
+
+  async preprocess(params: ReporterPreprocessParams) {
+    // Unlike other reporter callbacks, `preprocess` errors are NOT swallowed —
+    // they propagate so the run aborts before onBegin. Reporters use preprocess
+    // to mutate the corpus; silently dropping a planning error would let
+    // an inconsistent (partial-mutation) state reach the workers.
+    for (const reporter of this._reporters)
+      await reporter.preprocess?.(params);
   }
 
   onBegin(suite: test.Suite) {

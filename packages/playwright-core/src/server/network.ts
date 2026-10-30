@@ -16,6 +16,8 @@
 
 import { ManualPromise } from '@isomorphic/manualPromise';
 import { assert } from '@isomorphic/assert';
+import { rewriteErrorMessage } from '@utils/stackTrace';
+import { isProtocolError } from './protocolError';
 import { BrowserContext } from './browserContext';
 import { APIRequestContext } from './fetch';
 import { SdkObject } from './instrumentation';
@@ -52,8 +54,9 @@ export function filterCookies(cookies: channels.NetworkCookie[], urls: string[])
   });
 }
 
+// Mirrors Chromium's net::IsLocalhost(): localhost, *.localhost, 127.0.0.0/8 and [::1].
 export function isLocalHostname(hostname: string): boolean {
-  return hostname === 'localhost' || hostname.endsWith('.localhost');
+  return hostname === 'localhost' || hostname.endsWith('.localhost') || hostname === '[::1]' || /^127\.\d+\.\d+\.\d+$/.test(hostname);
 }
 
 // Forbidden request headers according to https://developer.mozilla.org/en-US/docs/Glossary/Forbidden_request_header
@@ -116,6 +119,25 @@ export function applyHeadersOverrides(original: HeadersArray, overrides: Headers
 // 253402300799 == Fri, 31 Dec 9999 23:59:59 +0000 (UTC)
 // 253402300800 == Sat,  1 Jan 1000 00:00:00 +0000 (UTC)
 export const kMaxCookieExpiresDateInSeconds = 253402300799;
+
+export type ClearCookiesOptions = { name?: string | RegExp, domain?: string | RegExp, path?: string | RegExp };
+
+export function hasClearCookiesFilter(options: ClearCookiesOptions): boolean {
+  return options.name !== undefined || options.domain !== undefined || options.path !== undefined;
+}
+
+export function cookieMatchesClearFilter(cookie: channels.NetworkCookie, options: ClearCookiesOptions): boolean {
+  const matches = (prop: 'name' | 'domain' | 'path', value: string | RegExp | undefined) => {
+    if (value === undefined)
+      return true;
+    if (value instanceof RegExp) {
+      value.lastIndex = 0;
+      return value.test(cookie[prop]);
+    }
+    return cookie[prop] === value;
+  };
+  return matches('name', options.name) && matches('domain', options.domain) && matches('path', options.path);
+}
 
 export function rewriteCookies(cookies: channels.SetNetworkCookie[]): channels.SetNetworkCookie[] {
   return cookies.map(c => {
@@ -511,7 +533,6 @@ export type SecurityDetails = {
 
 export class Response extends SdkObject {
   private _request: Request;
-  private _contentPromise: Promise<Buffer> | null = null;
   private _finishedPromise = new ManualPromise<void>();
   private _status: number;
   private _statusText: string;
@@ -642,19 +663,21 @@ export class Response extends SdkObject {
     return await this._rawResponseHeadersPromise;
   }
 
-  internalBody(): Promise<Buffer> {
-    if (!this._contentPromise) {
-      this._contentPromise = this._finishedPromise.then(async () => {
-        if (this._status >= 300 && this._status <= 399)
-          throw new Error('Response body is unavailable for redirect responses');
-        if (this._request._responseBodyOverride) {
-          const { body, isBase64 } = this._request._responseBodyOverride;
-          return Buffer.from(body, isBase64 ? 'base64' : 'utf-8');
-        }
-        return this._getResponseBodyCallback();
-      });
+  async internalBody(): Promise<Buffer> {
+    await this._finishedPromise;
+    if (this._status >= 300 && this._status <= 399)
+      throw new Error('Response body is unavailable for redirect responses');
+    if (this._request._responseBodyOverride) {
+      const { body, isBase64 } = this._request._responseBodyOverride;
+      return Buffer.from(body, isBase64 ? 'base64' : 'utf-8');
     }
-    return this._contentPromise;
+    try {
+      return await this._getResponseBodyCallback();
+    } catch (e) {
+      if (isProtocolError(e) && e.type === 'error')
+        rewriteErrorMessage(e, e.message + '\nResponse body is not available for a response that was navigated away from. Read response.body() before triggering any navigation.');
+      throw e;
+    }
   }
 
   request(): Request {

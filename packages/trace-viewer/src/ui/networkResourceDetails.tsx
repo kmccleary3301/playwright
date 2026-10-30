@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import type { ResourceSnapshot } from '@trace/snapshot';
+import type { ResourceSnapshot } from '@isomorphic/trace/trace';
 import * as React from 'react';
 import './networkResourceDetails.css';
 import { TabbedPane } from '@web/components/tabbedPane';
@@ -27,7 +27,7 @@ import type { Language } from '@isomorphic/locatorGenerators';
 import { isJsonMimeType, isXmlMimeType } from '@isomorphic/mimeType';
 import { useAsyncMemo, useSetting } from '@web/uiUtils';
 import { bytesToString, msToString } from '@isomorphic/formatUtils';
-import type { Entry, WebSocketMessage } from '@trace/har';
+import type { Entry, WebSocketMessage } from '@isomorphic/trace/versions/har';
 import { useTraceModel } from './traceModelContext';
 import { Expandable } from '@web/components/expandable';
 import { ListView } from '@web/components/listView';
@@ -54,8 +54,8 @@ export const NetworkResourceDetails: React.FunctionComponent<{
     if (model && resource.request.postData) {
       const requestContentTypeHeader = resource.request.headers.find(q => q.name.toLowerCase() === 'content-type');
       const requestContentType = requestContentTypeHeader ? requestContentTypeHeader.value : '';
-      if (resource.request.postData._sha1) {
-        const response = await fetch(model.createRelativeUrl(`sha1/${resource.request.postData._sha1}`));
+      if (resource.request.postData._file) {
+        const response = await fetch(model.createRelativeUrl(`file/${resource.request.postData._file}`));
         return { text: await response.text(), mimeType: requestContentType };
       } else {
         return { text: resource.request.postData.text, mimeType: requestContentType };
@@ -140,13 +140,11 @@ const ExpandableSection: React.FC<{
     setExpanded={setExpanded}
     expandOnTitleClick
     title={
-      <>
-        <span className='network-request-details-header'>{title}
-          {showCount && <span className='network-request-details-header-count'> × {data?.length ?? 0}</span>}
-        </span>
-        { titleChildren }
-      </>
+      <span className='network-request-details-header'>{title}
+        {showCount && <span className='network-request-details-header-count'> × {data?.length ?? 0}</span>}
+      </span>
     }
+    titleSuffix={titleChildren}
     className={className}
   >
     {data && <table className='network-request-details-table'>
@@ -216,10 +214,10 @@ const ResponseTab: React.FunctionComponent<{
 
   React.useEffect(() => {
     const readResources = async  () => {
-      if (model && resource.response.content._sha1) {
+      if (model && resource.response.content._file) {
         const useBase64 = resource.response.content.mimeType.includes('image');
         const isFont = resource.response.content.mimeType.includes('font');
-        const response = await fetch(model.createRelativeUrl(`sha1/${resource.response.content._sha1}`));
+        const response = await fetch(model.createRelativeUrl(`file/${resource.response.content._file}`));
         if (useBase64) {
           const blob = await response.blob();
           const reader = new FileReader();
@@ -244,7 +242,7 @@ const ResponseTab: React.FunctionComponent<{
   const formatResult = useFormattedBody(responseBody, showFormattedResponse);
 
   return <div className='vbox network-request-details-tab'>
-    {!resource.response.content._sha1 && <div>Response body is not available for this request.</div>}
+    {!resource.response.content._file && <div>Response body is not available for this request.</div>}
     {responseBody && responseBody.font && <FontPreview font={responseBody.font} />}
     {responseBody && responseBody.dataUrl && <div><img draggable='false' src={responseBody.dataUrl} /></div>}
     {responseBody && responseBody.text !== undefined && <div className='vbox network-response-body'>
@@ -326,9 +324,9 @@ const WebSocketMessagesTab: React.FunctionComponent<{
   const indexedMessages = useAsyncMemo<IndexedWebSocketMessage[] | undefined>(async () => {
     if (resource._webSocketMessages)
       return resource._webSocketMessages.map((m, index) => ({ ...m, index, byteLength: messageByteLength(m) }));
-    if (model && resource.response.content._sha1) {
+    if (model && resource.response.content._file) {
       try {
-        const response = await fetch(model.createRelativeUrl(`sha1/${resource.response.content._sha1}`));
+        const response = await fetch(model.createRelativeUrl(`file/${resource.response.content._file}`));
         if (!response.ok)
           return [];
         const text = await response.text();
@@ -511,12 +509,21 @@ function formatXml(xml: string, indent = '  ') {
   return lines.join('\n');
 }
 
+// JSON.parse turns every number into a double, which rounds integers beyond
+// Number.MAX_SAFE_INTEGER. Preserve the original source text of each number instead.
+function formatJson(json: string): string {
+  const rawJSON = (JSON as { rawJSON?(text: string): unknown }).rawJSON;
+  const preserveNumbers = rawJSON && ((key: string, value: any, context?: { source?: string }) =>
+    typeof value === 'number' && context?.source !== undefined ? rawJSON(context.source) : value);
+  return JSON.stringify(JSON.parse(json, preserveNumbers), null, 2);
+}
+
 function formatBody(body: string, contentType?: string): string {
   if (!body.trim() || !contentType)
     return body;
 
   if (isJsonMimeType(contentType))
-    return JSON.stringify(JSON.parse(body), null, 2);
+    return formatJson(body);
 
   if (isXmlMimeType(contentType))
     return formatXml(body);

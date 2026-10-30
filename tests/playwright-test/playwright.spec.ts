@@ -25,6 +25,7 @@ const ffmpeg = registry.registry.findExecutable('ffmpeg')!.executablePath();
 export class VideoPlayer {
   videoWidth: number;
   videoHeight: number;
+  fps: number;
 
   constructor(fileName: string) {
     const output = spawnSync(ffmpeg, ['-i', fileName, '-r', '25', `${fileName}-%03d.png`]).stderr.toString();
@@ -33,8 +34,35 @@ export class VideoPlayer {
     const resolutionMatch = streamLine!.match(/, (\d+)x(\d+),/);
     this.videoWidth = parseInt(resolutionMatch![1], 10);
     this.videoHeight = parseInt(resolutionMatch![2], 10);
+    this.fps = parseFloat(streamLine!.match(/, ([\d.]+) fps,/)![1]);
   }
 }
+
+test('should respect screen option', async ({ runInlineTest }) => {
+  const result = await runInlineTest({
+    'playwright.config.ts': `
+      module.exports = { use: { viewport: { width: 500, height: 500 }, screen: { width: 1000, height: 1000 } } };
+    `,
+    'a.test.ts': `
+      import { test, expect } from '@playwright/test';
+      test('pass', async ({ page, screen }) => {
+        expect(screen).toEqual({ width: 1000, height: 1000 });
+        expect(await page.evaluate(() => [window.screen.width, window.screen.height])).toEqual([1000, 1000]);
+      });
+    `,
+    'b.test.ts': `
+      import { test, expect, devices } from '@playwright/test';
+      test.use({ ...devices['iPhone 13'] });
+      test('pass', async ({ page, screen }) => {
+        expect(screen).toEqual({ width: 390, height: 844 });
+        expect(await page.evaluate(() => [window.screen.width, window.screen.height])).toEqual([390, 844]);
+      });
+    `,
+  }, { workers: 1 });
+
+  expect(result.exitCode).toBe(0);
+  expect(result.passed).toBe(2);
+});
 
 test('should respect viewport option', async ({ runInlineTest }) => {
   const result = await runInlineTest({
@@ -590,6 +618,26 @@ test('should work with video: retain-on-first-failure', async ({ runInlineTest }
   expect(fs.readdirSync(dirRetry).find(file => file.endsWith('webm'))).toBeFalsy();
 });
 
+test('should show a single test overlay when a step starts right after page creation', async ({ runInlineTest }) => {
+  const result = await runInlineTest({
+    'playwright.config.ts': `
+      module.exports = { use: { video: { mode: 'on', show: { test: { level: 'step' } } } }, name: 'chromium' };
+    `,
+    'a.test.ts': `
+      import { test, expect } from '@playwright/test';
+      test('my test', async ({ page }) => {
+        await test.step('first step', async () => {
+          const lines = await page.locator('.x-pw-user-overlay').evaluateAll(els => els.map(el => el.innerText.split('\\n')));
+          expect(lines).toEqual([['a.test.ts', 'my test', 'first step']]);
+        });
+      });
+    `,
+  }, { workers: 1 });
+
+  expect(result.exitCode).toBe(0);
+  expect(result.passed).toBe(1);
+});
+
 test('should work with video: retain-on-failure-and-retries', async ({ runInlineTest }) => {
   const result = await runInlineTest({
     'playwright.config.ts': `
@@ -642,6 +690,31 @@ test('should work with video size', async ({ runInlineTest }) => {
   const videoPlayer = new VideoPlayer(path.join(folder, file));
   expect(videoPlayer.videoWidth).toBe(220);
   expect(videoPlayer.videoHeight).toBe(110);
+});
+
+test('should work with video fps', async ({ runInlineTest }) => {
+  const result = await runInlineTest({
+    'playwright.config.js': `
+      module.exports = {
+        use: { video: { mode: 'on', fps: 60 } },
+        name: 'chromium',
+        preserveOutput: 'always',
+      };
+    `,
+    'a.test.ts': `
+      import { test, expect } from '@playwright/test';
+      test('pass', async ({ page }) => {
+        await page.setContent('<div>PASS</div>');
+        await page.waitForTimeout(1000);
+      });
+    `,
+  }, { workers: 1 });
+  expect(result.exitCode).toBe(0);
+  expect(result.passed).toBe(1);
+  const folder = test.info().outputPath(`test-results/a-pass-chromium/`);
+  const [file] = fs.readdirSync(folder);
+  const videoPlayer = new VideoPlayer(path.join(folder, file));
+  expect(videoPlayer.fps).toBe(60);
 });
 
 test('should work with video.path() throwing', async ({ runInlineTest }, testInfo) => {

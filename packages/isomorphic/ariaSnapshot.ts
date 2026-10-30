@@ -24,7 +24,6 @@ export type AriaRole = 'alert' | 'alertdialog' | 'application' | 'article' | 'ba
   'spinbutton' | 'status' | 'strong' | 'subscript' | 'superscript' | 'switch' | 'tab' | 'table' | 'tablist' | 'tabpanel' | 'term' | 'textbox' | 'time' | 'timer' |
   'toolbar' | 'tooltip' | 'tree' | 'treegrid' | 'treeitem';
 
-// Note: please keep in sync with ariaPropsEqual() below.
 export type AriaProps = {
   checked?: boolean | 'mixed';
   disabled?: boolean;
@@ -42,7 +41,6 @@ export type AriaBox = {
   cursor?: string;
 };
 
-// Note: please keep in sync with ariaNodesEqual() below.
 export type AriaNode = AriaProps & {
   role: AriaRole | 'fragment' | 'iframe';
   name: string;
@@ -53,23 +51,32 @@ export type AriaNode = AriaProps & {
   props: Record<string, string>;
 };
 
-export function ariaNodesEqual(a: AriaNode, b: AriaNode): boolean {
-  if (a.role !== b.role || a.name !== b.name)
-    return false;
-  if (!ariaPropsEqual(a, b) || hasPointerCursor(a) !== hasPointerCursor(b))
-    return false;
-  const aKeys = Object.keys(a.props);
-  const bKeys = Object.keys(b.props);
-  return aKeys.length === bKeys.length && aKeys.every(k => a.props[k] === b.props[k]);
-}
-
 export function hasPointerCursor(ariaNode: AriaNode): boolean {
   return ariaNode.box.cursor === 'pointer';
 }
 
-function ariaPropsEqual(a: AriaProps, b: AriaProps): boolean {
-  return a.active === b.active && a.checked === b.checked && a.disabled === b.disabled && a.expanded === b.expanded && a.invalid === b.invalid && a.selected === b.selected && a.level === b.level && a.pressed === b.pressed;
-}
+export type AriaNodeJSON = {
+  role: AriaRole | 'iframe' | 'text';
+  name?: string;
+  checked?: true | 'mixed';
+  disabled?: true;
+  expanded?: true;
+  active?: true;
+  invalid?: true | 'grammar' | 'spelling';
+  level?: number;
+  pressed?: true | 'mixed';
+  selected?: true;
+  ariaHidden?: true;
+  ref?: string;
+  cursor?: 'pointer';
+  box?: { x: number, y: number, width: number, height: number };
+  url?: string;
+  placeholder?: string;
+  text?: string;
+  children?: (AriaNodeJSON | string)[];
+};
+
+export type AriaSnapshotJSON = AriaNodeJSON[];
 
 // We pass parsed template between worlds using JSON, make it easy.
 export type AriaRegex = { pattern: string };

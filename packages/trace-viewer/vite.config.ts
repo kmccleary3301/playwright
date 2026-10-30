@@ -20,13 +20,15 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
 import { bundle } from './bundle';
+import { istanbul } from '../../utils/build/viteIstanbul';
 
 // https://vitejs.dev/config/
 export default defineConfig({
   base: '',
   plugins: [
     react(),
-    bundle()
+    bundle(),
+    ...(process.env.PWTEST_COVERAGE ? [istanbul()] : []),
   ],
   define: {
     'process.env': {},
@@ -37,7 +39,6 @@ export default defineConfig({
       '@injected': path.resolve(__dirname, '../injected/src'),
       '@isomorphic': path.resolve(__dirname, '../isomorphic'),
       '@testIsomorphic': path.resolve(__dirname, '../playwright/src/isomorphic'),
-      '@trace': path.resolve(__dirname, '../trace/src'),
       '@web': path.resolve(__dirname, '../web/src'),
     },
   },

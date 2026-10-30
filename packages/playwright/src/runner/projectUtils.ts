@@ -18,7 +18,7 @@ import fs from 'fs';
 import path from 'path';
 import { promisify } from 'util';
 
-import minimatch from 'minimatch';
+import { minimatch } from 'minimatch';
 import { escapeRegExp } from '@isomorphic/stringUtils';
 
 import { createFileMatcher } from '../util';
@@ -33,9 +33,9 @@ function wildcardPatternToRegExp(pattern: string): RegExp {
   return new RegExp('^' + pattern.split('*').map(escapeRegExp).join('.*') + '$', 'ig');
 }
 
-export function filterProjects(projects: commonConfig.FullProjectInternal[], projectNames?: string[]): commonConfig.FullProjectInternal[] {
+export function filterProjects(projects: commonConfig.FullProjectInternal[], projectNames?: string[], includeNonDefault?: boolean): commonConfig.FullProjectInternal[] {
   if (!projectNames)
-    return [...projects];
+    return projects.filter(project => includeNonDefault || project.default);
 
   const projectNamesToFind = new Set<string>();
   const unmatchedProjectNames = new Map<string, string>();

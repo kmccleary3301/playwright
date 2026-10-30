@@ -429,6 +429,26 @@ await page.Locator("#input").FillAsync(\"てすと\");`);
     expect(message.text()).toBe('John Doe');
   });
 
+  test('should fill [contentEditable] with initial text', async ({ openRecorder }) => {
+    const { page, recorder } = await openRecorder();
+
+    await recorder.setContentAndWait(`
+      <section aria-label="First"><h1 contenteditable="" oninput="console.log(event.target.innerText)">Initial text</h1></section>
+      <section aria-label="Second"><h1 contenteditable="">More text</h1></section>
+    `);
+
+    const [message, sources] = await Promise.all([
+      page.waitForEvent('console', msg => msg.type() !== 'error'),
+      recorder.waitForOutput('JavaScript', 'fill'),
+      page.fill('section[aria-label=First] h1', 'John Doe')
+    ]);
+    // The selector should not be derived from the text that is being changed by the fill,
+    // but can use the accessible name of the parent element.
+    expect(sources.get('JavaScript')!.text).toContain(`
+  await page.getByRole('region', { name: 'First' }).getByRole('heading').fill('John Doe');`);
+    expect(message.text()).toBe('John Doe');
+  });
+
   test('should press', async ({ openRecorder }) => {
     const { page, recorder } = await openRecorder();
 
@@ -554,6 +574,32 @@ await page.GetByRole(AriaRole.Textbox).PressAsync("Shift+Enter");`);
     expect(messages.length).toBe(2);
     expect(messages[0].text()).toBe('down:ArrowDown');
     expect(messages[1].text()).toBe('up:ArrowDown');
+  });
+
+  test('should not record a click on Enter press', async ({ openRecorder }) => {
+    const { page, recorder } = await openRecorder();
+
+    await recorder.setContentAndWait(`<button onclick="console.log('clicked')">Submit</button>`);
+
+    const locator = await recorder.focusElement('button');
+    expect(locator).toBe(`getByRole('button', { name: 'Submit' })`);
+
+    const [message] = await Promise.all([
+      page.waitForEvent('console', msg => msg.type() !== 'error'),
+      recorder.waitForOutput('JavaScript', `press('Enter')`),
+      page.keyboard.press('Enter'),
+    ]);
+    expect(message.text()).toBe('clicked');
+
+    // Wait for the next action to be recorded, to make sure the keyboard-activated
+    // click event that follows the Enter press did not produce a click action.
+    const [sources] = await Promise.all([
+      recorder.waitForOutput('JavaScript', `press('Tab')`),
+      page.keyboard.press('Tab'),
+    ]);
+    expect(sources.get('JavaScript')!.text).toContain(`
+  await page.getByRole('button', { name: 'Submit' }).press('Enter');`);
+    expect(sources.get('JavaScript')!.text).not.toContain(`click()`);
   });
 
   test('should check', async ({ openRecorder }) => {
@@ -979,7 +1025,9 @@ await page.GetByText("Click me").ClickAsync(new()
 });`);
   });
 
-  test('should record slider', async ({ openRecorder, browserName, headless }) => {
+  test('should record slider', async ({ openRecorder, browserName, isLinux, headless }) => {
+    test.fixme(browserName === 'chromium' && isLinux && headless, 'https://github.com/microsoft/playwright/issues/38568');
+
     const { page, recorder } = await openRecorder();
 
     await recorder.setContentAndWait(`<input type="range" min="0" max="10" value="5">`);

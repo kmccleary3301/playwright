@@ -93,6 +93,18 @@ test('trace requests shows requests with ordinals', async ({ runTraceCli }) => {
   expect(stdout).toMatch(/\d+\./);
 });
 
+test('trace requests shows start times and aborted request durations', async ({ runTraceCli }) => {
+  const { stdout, exitCode } = await runTraceCli(['requests']);
+  expect(exitCode).toBe(0);
+  expect(stdout).toContain('Start');
+  // Every request row carries a start timestamp in the `trace actions` Time format.
+  expect(stdout).toMatch(/\d+\.\s+\d+:\d{2}\.\d{3}\s/);
+  // The aborted request has a recorded duration rather than '-'.
+  const abortedRow = stdout.split('\n').find(line => line.includes('aborted'))!;
+  expect(abortedRow).toContain('blocked');
+  expect(abortedRow).toMatch(/\s\d+(\.\d+)?m?s\s/);
+});
+
 test('trace requests --method filters', async ({ runTraceCli }) => {
   const { stdout, exitCode } = await runTraceCli(['requests', '--method', 'GET']);
   expect(exitCode).toBe(0);
@@ -105,6 +117,7 @@ test('trace request shows details', async ({ runTraceCli }) => {
   expect(exitCode).toBe(0);
   expect(stdout).toContain('General');
   expect(stdout).toContain('status:');
+  expect(stdout).toMatch(/start:\s+\d+:\d{2}\.\d{3}/);
   expect(stdout).toContain('Request headers');
   expect(stdout).toContain('Response headers');
 });
@@ -148,6 +161,14 @@ test('trace console --errors-only', async ({ runTraceCli }) => {
   expect(stdout).not.toContain('info message');
 });
 
+test('trace console --grep filters by message text', async ({ runTraceCli }) => {
+  const { stdout, exitCode } = await runTraceCli(['console', '--grep', 'warning']);
+  expect(exitCode).toBe(0);
+  expect(stdout).toContain('warning message');
+  expect(stdout).not.toContain('info message');
+  expect(stdout).not.toContain('error message');
+});
+
 test('trace errors', async ({ runTraceCli }) => {
   const { stdout, exitCode } = await runTraceCli(['errors']);
   expect(exitCode).toBe(0);
@@ -165,12 +186,12 @@ test('trace snapshot runs command on snapshot', async ({ runTraceCli }) => {
   expect(stdout).toBeTruthy();
 });
 
-test('trace snapshot --name before', async ({ runTraceCli }) => {
+test('trace snapshot --phase before', async ({ runTraceCli }) => {
   const { stdout: listOutput } = await runTraceCli(['actions', '--grep', 'Click']);
   const match = listOutput.match(/^\s+(\d+)\.\s/m);
   expect(match).toBeTruthy();
 
-  const { stdout, exitCode } = await runTraceCli(['snapshot', '--name', 'before', match![1]]);
+  const { stdout, exitCode } = await runTraceCli(['snapshot', '--phase', 'before', match![1]]);
   expect(exitCode).toBe(0);
   expect(stdout).toBeTruthy();
 });
@@ -181,7 +202,7 @@ test('trace snapshot resolves inner frames', async ({ runTraceCli }) => {
   expect(ordinals.length).toBeGreaterThanOrEqual(2);
   const anchorClickOrdinal = ordinals[ordinals.length - 1];
 
-  const { stdout } = await runTraceCli(['snapshot', '--name', 'after', anchorClickOrdinal]);
+  const { stdout } = await runTraceCli(['snapshot', '--phase', 'after', anchorClickOrdinal]);
   expect(stdout).toContain('Innermost');
 });
 
@@ -192,7 +213,7 @@ test('trace snapshot replays sub-resource stylesheets from the archive', async (
   const ordinal = match![1];
 
   const { stdout, exitCode } = await runTraceCli([
-    'snapshot', '--name', 'before', ordinal,
+    'snapshot', '--phase', 'before', ordinal,
     '--', 'eval', 'el => getComputedStyle(el).color', '#styled',
   ]);
   expect(exitCode).toBe(0);

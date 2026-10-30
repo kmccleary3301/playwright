@@ -15,38 +15,39 @@
  */
 
 import fs from 'fs';
-import path from 'path';
 
 import { diff } from '../../utilsBundle';
 import * as z from 'zod';
 
+import { optionalElementSchema } from './snapshot';
 import { defineTabTool } from './tool';
-import { outputDir as outputDirForClient } from './context';
 
-import type { Context } from './context';
+import type { Response } from './response';
 import type { Tab } from './tab';
+
+function isMissingFile(error: unknown): boolean {
+  return error instanceof Error && 'code' in error && error.code === 'ENOENT';
+}
+
+async function readBaseline(response: Response, inputPath: string, label: string): Promise<string | undefined> {
+  const resolvedPath = await response.resolveClientFilename(inputPath);
+  try {
+    return await fs.promises.readFile(resolvedPath, 'utf8');
+  } catch (error) {
+    if (!isMissingFile(error))
+      throw error;
+    response.addError(`${label} baseline file not found: ${inputPath}`);
+    return undefined;
+  }
+}
+
+async function saveFile(response: Response, filename: string, prefix: string, ext: string, title: string, data: string) {
+  const resolvedFile = await response.resolveClientOutputFile({ prefix, ext, suggestedFilename: filename }, title);
+  await response.addFileResult(resolvedFile, data);
+}
 
 function normalizeText(text: string): string {
   return text.replace(/\r\n?/g, '\n').trim();
-}
-
-function extractYamlBlock(text: string): string {
-  const match = text.match(/```yaml\n([\s\S]*?)\n```/);
-  return match ? match[1] : text;
-}
-
-async function readTextFile(resolvedPath: string): Promise<string> {
-  return await fs.promises.readFile(resolvedPath, 'utf8');
-}
-
-function resolveMaybeRelative(context: Context, inputPath: string): string {
-  if (path.isAbsolute(inputPath))
-    return inputPath;
-  const cwdPath = path.resolve(process.cwd(), inputPath);
-  if (fs.existsSync(cwdPath))
-    return cwdPath;
-  const outDir = outputDirForClient(context.options);
-  return path.resolve(outDir, inputPath);
 }
 
 function buildPatch(label: string, expected: string, actual: string, maxLines?: number): string {
@@ -63,15 +64,16 @@ function summarizeDiff(expected: string, actual: string, label: string, maxLines
   return { equal: false, patch: buildPatch(label, expected, actual, maxLines) };
 }
 
-async function captureAriaSnapshot(tab: Tab): Promise<string> {
-  const snapshot = await tab.captureSnapshot(undefined, undefined, undefined, undefined);
+async function captureAriaSnapshot(tab: Tab, target?: { target?: string, element?: string }): Promise<string> {
+  const root = target?.target ? (await tab.targetLocator({ target: target.target, element: target.element })).locator : undefined;
+  const snapshot = await tab.captureSnapshot(root, undefined, undefined, undefined);
   return snapshot.ariaSnapshot;
 }
 
-async function captureDomSnapshot(tab: Tab, params: { ref?: string, element?: string, stripScripts: boolean, stripStyles: boolean, normalize: 'light' | 'none' }): Promise<string> {
+async function captureDomSnapshot(tab: Tab, params: { target?: string, element?: string, stripScripts: boolean, stripStyles: boolean, normalize: 'light' | 'none' }): Promise<string> {
   let html: string;
-  if (params.ref && params.element) {
-    const { locator } = await tab.targetLocator({ target: params.ref, element: params.element });
+  if (params.target) {
+    const { locator } = await tab.targetLocator({ target: params.target, element: params.element });
     html = await locator.evaluate(el => (el as HTMLElement).outerHTML);
   } else {
     html = await tab.page.evaluate(() => document.documentElement.outerHTML);
@@ -100,28 +102,27 @@ const ariaSnapshotDiff = defineTabTool({
   schema: {
     name: 'browser_aria_snapshot_diff',
     title: 'ARIA snapshot diff',
-    description: 'Compare current ARIA snapshot against a baseline file',
-    inputSchema: z.object({
-      baselinePath: z.string().describe('Path to baseline snapshot (raw YAML or full snapshot output)'),
-      currentPath: z.string().optional().describe('Optional file path to save current snapshot'),
-      diffPath: z.string().optional().describe('Optional file path to save the diff'),
-      maxDiffLines: z.number().optional().describe('Maximum diff lines to include in response'),
-      failOnDiff: z.boolean().optional().describe('Whether to fail when diff is detected (default true)'),
+    description: 'Compare an ARIA snapshot with a YAML baseline; optionally target an element.',
+    inputSchema: optionalElementSchema.extend({
+      baselinePath: z.string().describe('Path to raw YAML baseline snapshot'),
+      currentPath: z.string().optional().describe('Output path for the current snapshot.'),
+      diffPath: z.string().optional().describe('Output path for the diff.'),
+      maxDiffLines: z.number().optional().describe('Maximum diff lines in response (default 120).'),
+      failOnDiff: z.boolean().optional().describe('Fail when the page differs from the baseline (default true).'),
     }),
     type: 'assertion',
   },
 
   handle: async (tab, params, response) => {
-    const currentRaw = await captureAriaSnapshot(tab);
-    const baselinePath = resolveMaybeRelative(tab.context, params.baselinePath);
-    const baselineRaw = await readTextFile(baselinePath);
-    const expected = normalizeText(extractYamlBlock(baselineRaw));
+    const baselineRaw = await readBaseline(response, params.baselinePath, 'ARIA snapshot');
+    if (baselineRaw === undefined)
+      return;
+    const currentRaw = await captureAriaSnapshot(tab, params);
+    const expected = normalizeText(baselineRaw);
     const actual = normalizeText(currentRaw);
 
-    if (params.currentPath) {
-      const currentFile = await response.resolveClientFilename(params.currentPath);
-      await fs.promises.writeFile(currentFile, currentRaw, 'utf8');
-    }
+    if (params.currentPath)
+      await saveFile(response, params.currentPath, 'aria-snapshot', 'yaml', 'Current ARIA snapshot', currentRaw);
 
     const diffResult = summarizeDiff(expected, actual, 'aria-snapshot', params.maxDiffLines || 120);
     if (diffResult.equal) {
@@ -129,17 +130,16 @@ const ariaSnapshotDiff = defineTabTool({
       return;
     }
 
-    if (params.diffPath) {
-      const diffFile = await response.resolveClientFilename(params.diffPath);
-      await fs.promises.writeFile(diffFile, diffResult.patch, 'utf8');
-    }
+    if (params.diffPath)
+      await saveFile(response, params.diffPath, 'aria-snapshot-diff', 'diff', 'ARIA snapshot diff', diffResult.patch);
 
     const failOnDiff = params.failOnDiff !== false;
-    const message = `ARIA snapshot differs from baseline.\n${diffResult.patch}`;
-    if (failOnDiff)
-      response.addError(message);
-    else
-      response.addTextResult(message);
+    if (failOnDiff) {
+      response.addTextResult(diffResult.patch);
+      response.addError('ARIA snapshot differs from baseline.');
+    } else {
+      response.addTextResult(`ARIA snapshot differs from baseline.\n${diffResult.patch}`);
+    }
   },
 });
 
@@ -148,37 +148,29 @@ const domSnapshot = defineTabTool({
   schema: {
     name: 'browser_dom_snapshot',
     title: 'DOM snapshot',
-    description: 'Capture DOM snapshot of the page or an element',
-    inputSchema: z.object({
-      element: z.string().optional().describe('Human-readable element description'),
-      ref: z.string().optional().describe('Exact target element reference'),
-      filename: z.string().optional().describe('File name to save snapshot to'),
-      stripScripts: z.boolean().optional().describe('Remove script tags (default true)'),
-      stripStyles: z.boolean().optional().describe('Remove style tags (default false)'),
-      normalize: z.enum(['light', 'none']).optional().describe('Normalization mode (default light)'),
+    description: 'Capture a page or target DOM snapshot.',
+    inputSchema: optionalElementSchema.extend({
+      filename: z.string().optional().describe('Snapshot output filename.'),
+      stripScripts: z.boolean().optional().describe('Remove script tags (default true).'),
+      stripStyles: z.boolean().optional().describe('Remove style tags (default false).'),
+      normalize: z.enum(['light', 'none']).optional().describe('Normalization: light (trim whitespace) or none (default light).'),
     }),
     type: 'readOnly',
   },
 
   handle: async (tab, params, response) => {
-    if (!!params.element !== !!params.ref)
-      throw new Error('Both element and ref must be provided or neither.');
-
     const snapshot = await captureDomSnapshot(tab, {
+      target: params.target,
       element: params.element,
-      ref: params.ref,
       stripScripts: params.stripScripts !== false,
       stripStyles: params.stripStyles === true,
       normalize: params.normalize || 'light',
     });
 
-    if (params.filename) {
-      const fileName = await response.resolveClientFilename(params.filename);
-      await fs.promises.writeFile(fileName, snapshot, 'utf8');
-      response.addTextResult(`Saved DOM snapshot to ${fileName}`);
-    } else {
+    if (params.filename)
+      await saveFile(response, params.filename, 'dom-snapshot', 'html', 'DOM snapshot', snapshot);
+    else
       response.addTextResult(snapshot);
-    }
   }
 });
 
@@ -187,34 +179,31 @@ const domDiff = defineTabTool({
   schema: {
     name: 'browser_dom_diff',
     title: 'DOM snapshot diff',
-    description: 'Compare DOM snapshot against a baseline file',
-    inputSchema: z.object({
+    description: 'Compare DOM snapshots with a baseline.',
+    inputSchema: optionalElementSchema.extend({
       baselinePath: z.string().describe('Path to baseline DOM snapshot'),
-      element: z.string().optional().describe('Human-readable element description'),
-      ref: z.string().optional().describe('Exact target element reference'),
-      diffPath: z.string().optional().describe('Optional file path to save the diff'),
-      maxDiffLines: z.number().optional().describe('Maximum diff lines to include in response'),
-      failOnDiff: z.boolean().optional().describe('Whether to fail when diff is detected (default true)'),
-      stripScripts: z.boolean().optional().describe('Remove script tags (default true)'),
-      stripStyles: z.boolean().optional().describe('Remove style tags (default false)'),
-      normalize: z.enum(['light', 'none']).optional().describe('Normalization mode (default light)'),
+      diffPath: z.string().optional().describe('Output path for the diff.'),
+      maxDiffLines: z.number().optional().describe('Maximum diff lines in response (default 120).'),
+      failOnDiff: z.boolean().optional().describe('Fail when the page differs from the baseline (default true).'),
+      stripScripts: z.boolean().optional().describe('Remove script tags (default true).'),
+      stripStyles: z.boolean().optional().describe('Remove style tags (default false).'),
+      normalize: z.enum(['light', 'none']).optional().describe('Normalization: light (trim whitespace) or none (default light).'),
     }),
     type: 'assertion',
   },
 
   handle: async (tab, params, response) => {
-    if (!!params.element !== !!params.ref)
-      throw new Error('Both element and ref must be provided or neither.');
-
+    const baselineRaw = await readBaseline(response, params.baselinePath, 'DOM');
+    if (baselineRaw === undefined)
+      return;
     const current = await captureDomSnapshot(tab, {
+      target: params.target,
       element: params.element,
-      ref: params.ref,
       stripScripts: params.stripScripts !== false,
       stripStyles: params.stripStyles === true,
       normalize: params.normalize || 'light',
     });
-    const baselinePath = resolveMaybeRelative(tab.context, params.baselinePath);
-    const expected = normalizeText(await readTextFile(baselinePath));
+    const expected = normalizeText(baselineRaw);
     const actual = normalizeText(current);
 
     const diffResult = summarizeDiff(expected, actual, 'dom-snapshot', params.maxDiffLines || 120);
@@ -223,18 +212,17 @@ const domDiff = defineTabTool({
       return;
     }
 
-    if (params.diffPath) {
-      const diffFile = await response.resolveClientFilename(params.diffPath);
-      await fs.promises.writeFile(diffFile, diffResult.patch, 'utf8');
-    }
+    if (params.diffPath)
+      await saveFile(response, params.diffPath, 'dom-snapshot-diff', 'diff', 'DOM snapshot diff', diffResult.patch);
 
-    const failOnDiff = params.failOnDiff !== false;
-    const message = `DOM snapshot differs from baseline.\n${diffResult.patch}`;
-    if (failOnDiff)
-      response.addError(message);
-    else
-      response.addTextResult(message);
+    if (params.failOnDiff !== false) {
+      response.addTextResult(diffResult.patch);
+      response.addError('DOM snapshot differs from baseline.');
+    } else {
+      response.addTextResult(`DOM snapshot differs from baseline.\n${diffResult.patch}`);
+    }
   }
 });
 
 export default [ariaSnapshotDiff, domSnapshot, domDiff];
+

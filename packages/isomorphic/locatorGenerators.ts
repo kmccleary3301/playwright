@@ -21,7 +21,7 @@ import type { NestedSelectorBody } from './selectorParser';
 import type { ParsedSelector } from './selectorParser';
 
 export type Language = 'javascript' | 'python' | 'java' | 'csharp' | 'jsonl';
-export type LocatorType = 'default' | 'role' | 'text' | 'label' | 'placeholder' | 'alt' | 'title' | 'test-id' | 'nth' | 'first' | 'last' | 'visible' | 'has-text' | 'has-not-text' | 'has' | 'hasNot' | 'frame' | 'frame-locator' | 'and' | 'or' | 'chain';
+export type LocatorType = 'default' | 'role' | 'text' | 'label' | 'placeholder' | 'alt' | 'title' | 'test-id' | 'nth' | 'first' | 'last' | 'visible' | 'filter-visible' | 'has-text' | 'has-not-text' | 'has' | 'hasNot' | 'frame' | 'frame-locator' | 'any-frame' | 'and' | 'or' | 'chain';
 export type LocatorBase = 'page' | 'locator' | 'frame-locator';
 export type Quote = '\'' | '"' | '`';
 
@@ -104,7 +104,11 @@ function innerAsLocators(factory: LocatorFactory, parsed: ParsedSelector, isFram
       continue;
     }
     if (part.name === 'visible') {
-      tokens.push([factory.generateLocator(base, 'visible', part.body as string), factory.generateLocator(base, 'default', `visible=${part.body}`)]);
+      const tokenList: string[] = [];
+      if (part.body === 'true')
+        tokenList.push(factory.generateLocator(base, 'visible', ''));
+      tokenList.push(factory.generateLocator(base, 'filter-visible', part.body as string), factory.generateLocator(base, 'default', `visible=${part.body}`));
+      tokens.push(tokenList);
       continue;
     }
     if (part.name === 'internal:text') {
@@ -162,16 +166,14 @@ function innerAsLocators(factory: LocatorFactory, parsed: ParsedSelector, isFram
       const attrSelector = parseAttributeSelector(part.body as string, true);
       const options: LocatorOptions = { attrs: [] };
       for (const attr of attrSelector.attributes) {
-        if (attr.name === 'name') {
-          if (options.exact !== undefined && options.exact !== attr.caseSensitive)
-            throw new Error(`Conflicting exactness in internal:role selector: ${stringifySelector({ parts: [part] })}`);
-          options.exact = attr.caseSensitive;
-          options.name = attr.value;
-        } else if (attr.name === 'description') {
-          if (options.exact !== undefined && options.exact !== attr.caseSensitive)
-            throw new Error(`Conflicting exactness in internal:role selector: ${stringifySelector({ parts: [part] })}`);
-          options.exact = attr.caseSensitive;
-          options.description = attr.value;
+        if (attr.name === 'name' || attr.name === 'description') {
+          // Only string values carry exactness, regular expressions are used as is.
+          if (typeof attr.value === 'string') {
+            if (options.exact !== undefined && options.exact !== attr.caseSensitive)
+              throw new Error(`Conflicting exactness in internal:role selector: ${stringifySelector({ parts: [part] })}`);
+            options.exact = attr.caseSensitive;
+          }
+          options[attr.name] = attr.value;
         } else {
           if (attr.name === 'level' && typeof attr.value === 'string')
             attr.value = +attr.value;
@@ -204,6 +206,11 @@ function innerAsLocators(factory: LocatorFactory, parsed: ParsedSelector, isFram
         tokens.push([factory.generateLocator(base, 'title', text, { exact })]);
         continue;
       }
+    }
+    if (part.name === 'internal:control' && (part.body as string) === 'any-frame') {
+      tokens.push([factory.generateLocator(base, 'any-frame', '')]);
+      nextBase = 'frame-locator';
+      continue;
     }
     if (part.name === 'internal:control' && (part.body as string) === 'enter-frame') {
       // transform last tokens from `${selector}` into `${selector}.contentFrame()` and `frameLocator(${selector})`
@@ -284,7 +291,7 @@ function combineTokens(factory: LocatorFactory, tokens: string[][], maxOutputSiz
 
 function detectExact(text: string): { exact?: boolean, text: string | RegExp } {
   let exact = false;
-  const match = text.match(/^\/(.*)\/([igm]*)$/);
+  const match = text.match(/^\/(.*)\/([dgimsuvy]*)$/);
   if (match)
     return { text: new RegExp(match[1], match[2]) };
   if (text.endsWith('"')) {
@@ -315,6 +322,8 @@ export class JavaScriptLocatorFactory implements LocatorFactory {
         return `frameLocator(${this.quote(body as string)})`;
       case 'frame':
         return `contentFrame()`;
+      case 'any-frame':
+        return `frameLocator()`;
       case 'nth':
         return `nth(${body})`;
       case 'first':
@@ -322,6 +331,8 @@ export class JavaScriptLocatorFactory implements LocatorFactory {
       case 'last':
         return `last()`;
       case 'visible':
+        return `visible()`;
+      case 'filter-visible':
         return `filter({ visible: ${body === 'true' ? 'true' : 'false'} })`;
       case 'role':
         const attrs: string[] = [];
@@ -414,6 +425,8 @@ export class PythonLocatorFactory implements LocatorFactory {
         return `frame_locator(${this.quote(body as string)})`;
       case 'frame':
         return `content_frame`;
+      case 'any-frame':
+        return `frame_locator()`;
       case 'nth':
         return `nth(${body})`;
       case 'first':
@@ -421,6 +434,8 @@ export class PythonLocatorFactory implements LocatorFactory {
       case 'last':
         return `last`;
       case 'visible':
+        return `visible`;
+      case 'filter-visible':
         return `filter(visible=${body === 'true' ? 'True' : 'False'})`;
       case 'role':
         const attrs: string[] = [];
@@ -478,7 +493,7 @@ export class PythonLocatorFactory implements LocatorFactory {
   }
 
   private regexToString(body: RegExp) {
-    const suffix = body.flags.includes('i') ? ', re.IGNORECASE' : '';
+    const suffix = regexFlagsSuffix(body, 're', regexFlagNames.python);
     return `re.compile(r"${normalizeEscapedRegexQuotes(body.source).replace(/\\\//, '/').replace(/"/g, '\\"')}"${suffix})`;
   }
 
@@ -526,6 +541,8 @@ export class JavaLocatorFactory implements LocatorFactory {
         return `frameLocator(${this.quote(body as string)})`;
       case 'frame':
         return `contentFrame()`;
+      case 'any-frame':
+        return `frameLocator()`;
       case 'nth':
         return `nth(${body})`;
       case 'first':
@@ -533,6 +550,8 @@ export class JavaLocatorFactory implements LocatorFactory {
       case 'last':
         return `last()`;
       case 'visible':
+        return `visible()`;
+      case 'filter-visible':
         return `filter(new ${clazz}.FilterOptions().setVisible(${body === 'true' ? 'true' : 'false'}))`;
       case 'role':
         const attrs: string[] = [];
@@ -586,7 +605,7 @@ export class JavaLocatorFactory implements LocatorFactory {
   }
 
   private regexToString(body: RegExp) {
-    const suffix = body.flags.includes('i') ? ', Pattern.CASE_INSENSITIVE' : '';
+    const suffix = regexFlagsSuffix(body, 'Pattern', regexFlagNames.java);
     return `Pattern.compile(${this.quote(normalizeEscapedRegexQuotes(body.source))}${suffix})`;
   }
 
@@ -628,6 +647,8 @@ export class CSharpLocatorFactory implements LocatorFactory {
         return `FrameLocator(${this.quote(body as string)})`;
       case 'frame':
         return `ContentFrame`;
+      case 'any-frame':
+        return `FrameLocator()`;
       case 'nth':
         return `Nth(${body})`;
       case 'first':
@@ -635,6 +656,8 @@ export class CSharpLocatorFactory implements LocatorFactory {
       case 'last':
         return `Last`;
       case 'visible':
+        return `Visible`;
+      case 'filter-visible':
         return `Filter(new() { Visible = ${body === 'true' ? 'true' : 'false'} })`;
       case 'role':
         const attrs: string[] = [];
@@ -688,7 +711,7 @@ export class CSharpLocatorFactory implements LocatorFactory {
   }
 
   private regexToString(body: RegExp): string {
-    const suffix = body.flags.includes('i') ? ', RegexOptions.IgnoreCase' : '';
+    const suffix = regexFlagsSuffix(body, 'RegexOptions', regexFlagNames.csharp);
     return `new Regex(${this.quote(normalizeEscapedRegexQuotes(body.source))}${suffix})`;
   }
 
@@ -734,8 +757,13 @@ export class JsonlLocatorFactory implements LocatorFactory {
 
   chainLocators(locators: string[]): string {
     const objects = locators.map(l => JSON.parse(l));
-    for (let i = 0; i < objects.length - 1; ++i)
-      objects[i].next = objects[i + 1];
+    for (let i = 0; i < objects.length - 1; ++i) {
+      // A locator may already be a chain, e.g. `contentFrame()` produces one. Append to its tail.
+      let tail = objects[i];
+      while (tail.next)
+        tail = tail.next;
+      tail.next = objects[i + 1];
+    }
     return JSON.stringify(objects[0]);
   }
 }
@@ -747,6 +775,19 @@ const generators: Record<Language, new (preferredQuote?: Quote) => LocatorFactor
   csharp: CSharpLocatorFactory,
   jsonl: JsonlLocatorFactory,
 };
+
+// Regular expression flags supported by the Python, Java and C# locators.
+export const regexFlagNames = {
+  python: { i: 'IGNORECASE', m: 'MULTILINE', s: 'DOTALL' },
+  java: { i: 'CASE_INSENSITIVE', m: 'MULTILINE', s: 'DOTALL' },
+  csharp: { i: 'IgnoreCase', m: 'Multiline', s: 'Singleline' },
+};
+
+// E.g. `, re.IGNORECASE | re.MULTILINE`.
+function regexFlagsSuffix(body: RegExp, flagsEnum: string, names: Record<string, string>): string {
+  const flags = [...body.flags].filter(flag => flag in names).map(flag => `${flagsEnum}.${names[flag]}`);
+  return flags.length ? `, ${flags.join(' | ')}` : '';
+}
 
 function isRegExp(obj: any): obj is RegExp {
   return obj instanceof RegExp;

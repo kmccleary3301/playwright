@@ -20,6 +20,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { execSync } from 'node:child_process';
 import { PNG } from 'playwright-core/lib/utilsBundle';
+import { utils } from '../../packages/playwright-core/lib/coreBundle';
 import type { CommonFixtures, CommonWorkerFixtures, TestChildProcess } from '../config/commonFixtures';
 import { commonFixtures } from '../config/commonFixtures';
 import type { ServerFixtures, ServerWorkerOptions } from '../config/serverFixtures';
@@ -392,6 +393,11 @@ export function createWhiteImage(width: number, height: number) {
   return createImage(width, height, 255, 255, 255);
 }
 
+export function createWebpImage(width: number, height: number, r: number = 0, g: number = 0, b: number = 0): Buffer {
+  const png = PNG.sync.read(createImage(width, height, r, g, b));
+  return utils.encodeWebp({ width: png.width, height: png.height, data: png.data }, { lossless: true });
+}
+
 export function paintBlackPixels(image: Buffer, blackPixelsCount: number): Buffer {
   const png = PNG.sync.read(image);
   for (let i = 0; i < blackPixelsCount; ++i) {
@@ -457,16 +463,6 @@ export function parseTestRunnerOutput(output: string) {
     didNotRun,
   };
 }
-
-export const playwrightCtConfigText = `
-import { defineConfig } from '@playwright/experimental-ct-react';
-export default defineConfig({
-  use: {
-    ctPort: ${3200 + (+process.env.TEST_PARALLEL_INDEX)}
-  },
-  projects: [{name: 'default'}],
-});
-`;
 
 export async function removeFolders(dirs: string[]): Promise<Error[]> {
   return await Promise.all(dirs.map((dir: string) =>

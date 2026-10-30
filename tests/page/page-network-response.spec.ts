@@ -83,6 +83,22 @@ it('should return uncompressed text for brotli encoding', {
   expect(await response.text()).toBe(text);
 });
 
+it('should return text for identity encoding', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42501' },
+}, async ({ page, server }) => {
+  const text = '<div>hello</div>';
+  server.setRoute('/identity.html', (req, res) => {
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Content-Encoding': 'Identity',
+    });
+    res.end(text);
+  });
+  const response = await page.goto(server.PREFIX + '/identity.html');
+  expect(response.headers()['content-encoding']).toBe('Identity');
+  expect(await response.text()).toBe(text);
+});
+
 it('should throw when requesting body of redirected response', async ({ page, server }) => {
   server.setRedirect('/foo.html', '/empty.html');
   const response = await page.goto(server.PREFIX + '/foo.html');
@@ -147,6 +163,32 @@ it('should return body with compression', async ({ page, server, asset }) => {
   const imageBuffer = fs.readFileSync(asset('pptr.png'));
   const responseBuffer = await response.body();
   expect(responseBuffer.equals(imageBuffer)).toBe(true);
+});
+
+it('should return non-utf8 body even when content-type says utf8', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/40510' },
+}, async ({ page, server, browserName, browserMajorVersion }) => {
+  it.fixme(browserName === 'webkit', 'webkit encodes the response body');
+  it.fixme(browserName === 'chromium' && browserMajorVersion < 151, 'older chromium re-encodes the non-utf8 response body and lacks Response.bytes()');
+
+  // Binary data with bytes that are invalid UTF-8.
+  const bytes = [0x80, 0x81, 0x82, 0xFF, 0xFE, 0x00, 0x01, 0x02];
+  const buffer = Buffer.from(bytes);
+  server.setRoute('/binary-as-text', (req, res) => {
+    res.writeHead(200, {
+      'Content-Type': 'text/plain;charset=UTF-8',
+      'Content-Length': buffer.length,
+    });
+    res.end(buffer);
+  });
+  await page.goto(server.EMPTY_PAGE);
+  const [response, bytesReceived] = await Promise.all([
+    page.waitForResponse(server.PREFIX + '/binary-as-text'),
+    page.evaluate(url => fetch(url).then(r => r.bytes()), server.PREFIX + '/binary-as-text'),
+  ]);
+  const body = await response.body();
+  expect(body.equals(buffer)).toBe(true);
+  expect(Array.from(bytesReceived)).toEqual(bytes);
 });
 
 it('should return status text', async ({ page, server }) => {
@@ -318,14 +360,36 @@ it('should report if request was fromServiceWorker', async ({ page, server, isAn
   }
 });
 
-it('should return body for prefetch script', async ({ page, server, browserName }) => {
+it('should return body for prefetch script', async ({ page, server, browserName, browserMajorVersion }) => {
   it.skip(browserName === 'webkit', 'No prefetch in WebKit: https://caniuse.com/link-rel-prefetch');
+  it.skip(browserName === 'chromium' && browserMajorVersion < 138, 'Requires Sec-Purpose header, shipped in Chrome 138');
   const [response] = await Promise.all([
     page.waitForResponse('**/prefetch.js'),
     page.goto(server.PREFIX + '/prefetch.html')
   ]);
   const body = await response.body();
   expect(body.toString()).toBe('// Scripts will be pre-fetched');
+});
+
+it('should return body for image with evicted body', {
+  annotation: { type: 'issue', description: 'https://github.com/microsoft/playwright/issues/42002' },
+}, async ({ page, server, isMac, browserName }) => {
+  it.fixme(isMac && browserName === 'webkit', 'WebKit on Mac evicts the body and returns empty buffer');
+  const imageBase64 = 'R0lGODlhAQABAAAAACw='; // truncated 1x1 gif, Chromium evicts its body
+  server.setRoute('/pixel.gif', (req, res) => {
+    res.setHeader('content-type', 'image/gif');
+    res.end(Buffer.from(imageBase64, 'base64'));
+  });
+  server.setRoute('/page.html', (req, res) => {
+    res.setHeader('content-type', 'text/html');
+    res.end('<html><body><img src="/pixel.gif"></body></html>');
+  });
+  const [response] = await Promise.all([
+    page.waitForResponse('**/pixel.gif'),
+    page.goto(server.PREFIX + '/page.html'),
+  ]);
+  const body = await response.body();
+  expect(body.toString('base64')).toBe(imageBase64);
 });
 
 it('should bypass disk cache when page interception is enabled', async ({ page, server }) => {
@@ -449,4 +513,19 @@ it('Response.formData() should parse multipart/form-data in page context', async
   expect(result.field1).toBe('value1');
   expect(result.filename).toBe('test.txt');
   expect(result.fileContent).toBe('hello');
+});
+
+it('should give a readable error when response.body() races with navigation', async ({ page, server, browserName }) => {
+  it.skip(browserName === 'firefox', 'Firefox keeps the response body available after navigating away, so it never throws');
+  it.info().annotations.push({ type: 'issue', description: 'https://github.com/microsoft/playwright/issues/41512' });
+  const [response] = await Promise.all([
+    page.waitForResponse(server.PREFIX + '/title.html'),
+    page.goto(server.PREFIX + '/title.html'),
+  ]);
+  // Navigate away — the browser frees the network resource from the first page load.
+  // The first page must have a non-empty body, otherwise WebKit returns an empty buffer instead of throwing.
+  await page.goto(server.PREFIX + '/grid.html');
+  const error = await response.body().catch(e => e);
+  expect(error).toBeInstanceOf(Error);
+  expect(error.message).toContain('navigated away');
 });

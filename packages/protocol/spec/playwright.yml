@@ -64,16 +64,8 @@ Playwright:
               pfx: binary?
         maxRedirects: int?
         httpCredentials:
-          type: object?
-          properties:
-            username: string
-            password: string
-            origin: string?
-            send:
-              type: enum?
-              literals:
-              - always
-              - unauthorized
+          type: array?
+          items: HttpCredentials
         proxy:
           type: object?
           properties:
@@ -337,6 +329,17 @@ IndexedDBDatabase:
                 multiEntry: boolean
                 unique: boolean
 
+OPFSEntry:
+  type: object
+  properties:
+    path: string
+    type:
+      type: enum
+      literals:
+      - file
+      - directory
+    base64: string?
+
 SetOriginStorage:
   type: object
   properties:
@@ -347,6 +350,9 @@ SetOriginStorage:
     indexedDB:
       type: array?
       items: IndexedDBDatabase
+    opfs:
+      type: array?
+      items: OPFSEntry
 
 OriginStorage:
   type: object
@@ -358,6 +364,9 @@ OriginStorage:
     indexedDB:
       type: array?
       items: IndexedDBDatabase
+    opfs:
+      type: array?
+      items: OPFSEntry
 
 RecordHarOptions:
   type: object
@@ -456,6 +465,9 @@ Debugger:
             line: int?
             column: int?
 
+    enable:
+      internal: true
+
   events:
 
     pausedStateChanged:
@@ -472,6 +484,33 @@ Debugger:
             title: string
             stack: string?
 
+    apiCallsUpdated:
+      parameters:
+        apiCalls:
+          type: array
+          items:
+            type: object
+            properties:
+              id: string
+              title: string
+              location:
+                type: object?
+                properties:
+                  file: string
+                  line: int?
+                  column: int?
+              newLogEntries:
+                type: array
+                items: string
+              actionPoint: Point?
+              status:
+                type: enum
+                literals:
+                - running
+                - success
+                - error
+              error: string?
+
 Dialog:
   type: interface
 
@@ -485,6 +524,8 @@ Dialog:
 
     accept:
       title: Accept dialog
+      renderParams:
+      - promptText
       parameters:
         promptText: string?
 

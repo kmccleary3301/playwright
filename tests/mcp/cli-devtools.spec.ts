@@ -16,6 +16,8 @@
 
 import fs from 'fs';
 import path from 'path';
+import { spawnSync } from 'child_process';
+import { registry } from '../../packages/playwright-core/lib/coreBundle';
 import { test, expect } from './cli-fixtures';
 
 test('console', async ({ cli, server }) => {
@@ -196,6 +198,25 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+test('recording-start-stop', async ({ cli, server }) => {
+  server.setContent('/', `<title>Title</title><button>Submit</button>`, 'text/html');
+
+  const { snapshot } = await cli('open', server.PREFIX);
+  expect(snapshot).toContain(`- button "Submit" [ref=e2]`);
+
+  const { output } = await cli('recording-start');
+  expect(output).toContain('Recording started');
+
+  await cli('click', 'e2');
+
+  const { output: stopOutput } = await cli('recording-stop');
+  expect(stopOutput).toContain(`Recording stopped. Recorded actions:
+
+\`\`\`js
+await page.getByRole('button', { name: 'Submit' }).click();
+\`\`\``);
+});
+
 test('tracing-start-stop', async ({ cli, server }, testInfo) => {
   await cli('open', server.HELLO_WORLD);
   const { output } = await cli('tracing-start');
@@ -216,7 +237,7 @@ test('tracing-start-stop', async ({ cli, server }, testInfo) => {
 
 test('video-start-stop', async ({ cli, server }) => {
   await cli('open', server.HELLO_WORLD);
-  const { output: videoStartOutput } = await cli('video-start', 'video.webm', '--size=400x300');
+  const { output: videoStartOutput } = await cli('video-start', 'recordings/video.webm', '--size=400x300');
   expect(videoStartOutput).toContain('Video recording started.');
   const { output: tabNewOutput } = await cli('tab-new');
   expect(tabNewOutput).toContain('1: (current) [](about:blank)');
@@ -225,7 +246,32 @@ test('video-start-stop', async ({ cli, server }) => {
   const { output: tabCloseOutput } = await cli('tab-close');
   expect(tabCloseOutput).toContain(`0: (current) [](${server.EMPTY_PAGE})`);
   const { output: videoStopOutput } = await cli('video-stop');
-  expect(videoStopOutput).toContain(`### Result\n- [Video](./video.webm)\n- [Video](./video-1.webm)`);
+  expect(videoStopOutput).toContain(`### Result\n- [Video](recordings${path.sep}video.webm)\n- [Video](recordings${path.sep}video-1.webm)`);
+});
+
+test('video-start with fps', async ({ cli, server }, testInfo) => {
+  await cli('open', server.HELLO_WORLD);
+  const { output } = await cli('video-start', 'video.webm', '--fps=60');
+  expect(output).toContain('Video recording started.');
+  await cli('video-stop');
+  const ffmpeg = registry.registry.findExecutable('ffmpeg')!.executablePath();
+  const { stderr } = spawnSync(ffmpeg, ['-i', testInfo.outputPath('video.webm')]);
+  expect(stderr.toString()).toContain(', 60 fps,');
+});
+
+test('video-start --cursor', async ({ boundBrowser, cli }) => {
+  const page = await boundBrowser.newPage();
+  await page.setContent(`<button>Submit</button>`);
+
+  await cli('attach', 'default');
+  await cli('snapshot');
+  await cli('video-start', 'video.webm', '--cursor');
+  await cli('click', 'e2');
+
+  // The cursor travels to the action point, the action title stays out of the video.
+  await expect(page.locator('x-pw-action-cursor')).toBeVisible();
+  await expect(page.locator('x-pw-title')).toBeHidden();
+  await cli('video-stop');
 });
 
 test('video-chapter', async ({ cli, server }) => {
