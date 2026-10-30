@@ -20,6 +20,7 @@ import { test, expect, parseResponse, consoleEntries } from './fixtures';
 test.describe('crash recovery', () => {
   test.skip(({ mcpBrowser }) => mcpBrowser !== 'chromium' && mcpBrowser !== 'chrome', 'chrome://crash is chromium-specific');
   test.skip(utils.hostPlatform.startsWith('ubuntu24.04'), 'never dispatches the crash event');
+  test.skip(({ mcpBrowser }) => mcpBrowser === 'chrome' && utils.hostPlatform.startsWith('ubuntu26.04'), 'Chrome never dispatches the crash event');
 
   test.beforeEach(async ({ client, server }) => {
     await client.callTool({
