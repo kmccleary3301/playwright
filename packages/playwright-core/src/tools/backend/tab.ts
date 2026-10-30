@@ -76,7 +76,6 @@ type EventEntry = ConsoleLogEntry | DownloadStartLogEntry | DownloadFinishLogEnt
 type NavigationWaitUntil = 'commit' | 'domcontentloaded' | 'load' | 'networkidle';
 
 
-
 export type TabHeader = {
   title: string;
   url: string;
