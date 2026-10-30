@@ -28,7 +28,7 @@ import { ManualPromise } from '@isomorphic/manualPromise';
 
 import * as mcpServer from './server';
 
-import type { ServerBackendFactory } from './server';
+import type { ServerBackendFactory, ServerSessionOptions } from './server';
 import type { SSEServerTransport as SSEServerTransportType } from '@modelcontextprotocol/sdk/server/sse.js';
 import type { StreamableHTTPServerTransport as StreamableHTTPServerTransportType } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 
@@ -101,10 +101,15 @@ async function handleSSE(serverBackendFactory: ServerBackendFactory, req: http.I
 
     return await transport.handlePostMessage(req, res);
   } else if (req.method === 'GET') {
+    const { sessionOptions, error } = parseSessionOptions(url, serverBackendFactory);
+    if (error) {
+      res.statusCode = 400;
+      return res.end(error);
+    }
     const transport = new SSEServerTransport('/sse', res);
     sessions.set(transport.sessionId, transport);
     testDebug(`create SSE session`);
-    await mcpServer.connect(serverBackendFactory, transport, Promise.resolve(), false);
+    await mcpServer.connect(serverBackendFactory, transport, Promise.resolve(), false, sessionOptions);
     res.on('close', () => {
       testDebug(`delete SSE session`);
       sessions.delete(transport.sessionId);
@@ -135,13 +140,19 @@ async function handleStreamable(serverBackendFactory: ServerBackendFactory, req:
   }
 
   if (req.method === 'POST') {
+    const { sessionOptions, error } = parseSessionOptions(new URL(`http://localhost${req.url}`), serverBackendFactory);
+    if (error) {
+      res.statusCode = 400;
+      res.end(error);
+      return;
+    }
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => crypto.randomUUID(),
       onsessioninitialized: async sessionId => {
         testDebug(`create http session`);
         const sessionInfo = { transport, transportInitialized: new ManualPromise<void>() };
         sessions.set(sessionId, sessionInfo);
-        await mcpServer.connect(serverBackendFactory, sessionInfo.transport, sessionInfo.transportInitialized, true);
+        await mcpServer.connect(serverBackendFactory, sessionInfo.transport, sessionInfo.transportInitialized, true, sessionOptions);
       }
     });
 
@@ -158,4 +169,21 @@ async function handleStreamable(serverBackendFactory: ServerBackendFactory, req:
 
   res.statusCode = 400;
   res.end('Invalid request');
+}
+function parseSessionOptions(url: URL, factory: ServerBackendFactory): { sessionOptions?: ServerSessionOptions, error?: string } {
+  const enabledCapabilities = factory.enabledCapabilities ?? [];
+  if (!url.searchParams.has('caps')) {
+    return {
+      sessionOptions: factory.enabledCapabilities ? { capabilities: enabledCapabilities } : undefined,
+    };
+  }
+
+  const requestedCapabilities = new Set(url.searchParams.getAll('caps').flatMap(value => value.split(',').map(capability => capability.trim()).filter(Boolean)));
+  const unsupportedCapabilities = [...requestedCapabilities].filter(requested => !enabledCapabilities.some(enabled => enabled === requested));
+  if (unsupportedCapabilities.length) {
+    const allowed = enabledCapabilities.length ? enabledCapabilities.join(', ') : '(none)';
+    return { error: `Unsupported caps: ${unsupportedCapabilities.join(', ')}. Allowed caps: ${allowed}` };
+  }
+
+  return { sessionOptions: { capabilities: enabledCapabilities.filter(capability => requestedCapabilities.has(capability)) } };
 }

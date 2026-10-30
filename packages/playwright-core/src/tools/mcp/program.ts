@@ -39,7 +39,7 @@ export function decorateMCPCommand(command: Command) {
       .option('--blocked-origins <origins>', 'semicolon-separated list of origins to block the browser from requesting. Blocklist is evaluated before allowlist. If used without the allowlist, requests not matching the blocklist are still allowed.\nImportant: *does not* serve as a security boundary and *does not* affect redirects.', semicolonSeparatedList)
       .option('--block-service-workers', 'block service workers')
       .option('--browser <browser>', 'browser or chrome channel to use, possible values: chrome, firefox, webkit, msedge.')
-      .option('--caps <caps>', 'comma-separated list of additional capabilities to enable, possible values: vision, pdf, devtools, diffs, styles, scenarios, perf.', commaSeparatedList)
+      .option('--caps <caps>', 'comma-separated list of additional capabilities to enable, possible values: vision, pdf, devtools, diffs, styles, scenarios, perf, testing, network, storage, config.', commaSeparatedList)
       .option('--cdp-endpoint <endpoint>', 'CDP endpoint to connect to.')
       .option('--cdp-header <headers...>', 'CDP headers to send with the connect request, multiple can be specified.', headerParser)
       .option('--cdp-timeout <timeout>', 'timeout in milliseconds for connecting to CDP endpoint, defaults to 30000ms', numberParser)
@@ -106,12 +106,16 @@ export function decorateMCPCommand(command: Command) {
         let clientCount = 0;
         const clientNameCounters = new Map<string, number>();
 
+        const enabledCapabilities = config.capabilities ?? [];
         const factory: mcpServer.ServerBackendFactory = {
           name: 'Playwright',
           nameInConfig: 'playwright',
           version,
+          enabledCapabilities,
           toolSchemas: tools.map(tool => tool.schema),
-          create: async (clientInfo: ClientInfo) => {
+          toolSchemasForCapabilities: capabilities => filteredTools({ capabilities }).map(tool => tool.schema),
+          create: async (clientInfo: ClientInfo, sessionOptions) => {
+            const sessionTools = sessionOptions ? filteredTools({ capabilities: sessionOptions.capabilities }) : tools;
             if (useSharedBrowser && !sharedBrowserPromise) {
               const promise = createBrowserWithInfo(config, clientInfo, options, { title: clientInfo.clientName, workspaceDir: clientInfo.cwd }).then(shared => {
                 shared.browser.once('disconnected', () => {
@@ -164,7 +168,7 @@ export function decorateMCPCommand(command: Command) {
             // Otherwise an idle client keeps its context open while other clients are active.
             const clientIdleTimer = shared && config.browser.isolated ? createIdleTimer(config, shared.ownership, () => browserContext.close().catch(() => { })) : undefined;
 
-            return new BrowserBackend(config, browserContext, tools, {
+            return new BrowserBackend(config, browserContext, sessionTools, {
               idleTimer: clientIdleTimer ?? info.idleTimer,
               dispose: async () => {
                 clientIdleTimer?.dispose();
