@@ -401,19 +401,31 @@ async function listFilesRecursive(dir: string): Promise<{ path: string, size: nu
   }));
 }
 
+// Splits on `### ` headers outside fenced code blocks, so page content quoted inside a
+// fence (snapshots, browser_markdown) cannot open or overwrite a response section.
 function parseSections(text: string): Map<string, string> {
   const sections = new Map<string, string>();
-  const sectionHeaders = text.split(/^### /m).slice(1); // Remove empty first element
+  let sectionName: string | undefined;
+  let sectionLines: string[] = [];
+  let fence: string | undefined;
 
-  for (const section of sectionHeaders) {
-    const firstNewlineIndex = section.indexOf('\n');
-    if (firstNewlineIndex === -1)
-      continue;
-
-    const sectionName = section.substring(0, firstNewlineIndex);
-    const sectionContent = section.substring(firstNewlineIndex + 1).trim();
-    sections.set(sectionName, sectionContent);
+  for (const line of text.split('\n')) {
+    if (fence === undefined) {
+      if (line.startsWith('### ')) {
+        if (sectionName !== undefined)
+          sections.set(sectionName, sectionLines.join('\n').trim());
+        sectionName = line.substring(4);
+        sectionLines = [];
+        continue;
+      }
+      fence = /^(`{3,})/.exec(line)?.[1];
+    } else if (line.trimEnd().length >= fence.length && /^`+$/.test(line.trimEnd())) {
+      fence = undefined;
+    }
+    sectionLines.push(line);
   }
+  if (sectionName !== undefined)
+    sections.set(sectionName, sectionLines.join('\n').trim());
 
   return sections;
 }

@@ -19,6 +19,7 @@ import common from './common';
 import config from './config';
 import console from './console';
 import cookies from './cookies';
+import cssRules from './cssRules';
 import devtools from './devtools';
 import dialogs from './dialogs';
 import diff from './diff';
@@ -28,6 +29,7 @@ import files from './files';
 import find from './find';
 import form from './form';
 import keyboard from './keyboard';
+import markdown from './markdown';
 import mouse from './mouse';
 import navigate from './navigate';
 import network from './network';
@@ -58,6 +60,7 @@ export const browserTools: Tool<any>[] = [
   ...config,
   ...console,
   ...cookies,
+  ...cssRules,
   ...devtools,
   ...dialogs,
   ...diff,
@@ -67,6 +70,7 @@ export const browserTools: Tool<any>[] = [
   ...find,
   ...form,
   ...keyboard,
+  ...markdown,
   ...mouse,
   ...navigate,
   ...network,
