@@ -15,15 +15,15 @@
  */
 
 import fs from 'fs';
-import path from 'path';
 
 import * as z from 'zod';
 
+import { elementSchema } from './snapshot';
 import { defineTabTool } from './tool';
-import { outputDir as outputDirForClient } from './context';
 
-import type { Context } from './context';
+import type { Response } from './response';
 import type { Tab } from './tab';
+import type * as playwright from '../../..';
 
 const STYLE_PRESETS = {
   typography: [
@@ -123,8 +123,8 @@ type LayoutMetrics = {
 };
 
 type CapturedTarget = {
-  ref: string;
-  element: string;
+  target: string;
+  element?: string;
   tag?: string;
   id?: string | null;
   className?: string | null;
@@ -134,7 +134,7 @@ type CapturedTarget = {
 };
 
 type SnapshotDiff = {
-  ref: string;
+  target: string;
   type: 'missing' | 'extra' | 'style' | 'layout';
   message?: string;
   property?: string;
@@ -158,7 +158,7 @@ const layoutMetricsSchema = z.object({
 });
 
 const capturedTargetSchema = z.object({
-  ref: z.string(),
+  target: z.string(),
   styles: z.record(z.string(), z.string()).optional(),
   layout: layoutMetricsSchema.optional(),
 }).passthrough();
@@ -173,15 +173,6 @@ function snapshotTargets(snapshot: unknown): z.infer<typeof capturedTargetSchema
 }
 
 
-function resolveMaybeRelative(context: Context, inputPath: string): string {
-  if (path.isAbsolute(inputPath))
-    return inputPath;
-  const cwdPath = path.resolve(process.cwd(), inputPath);
-  if (fs.existsSync(cwdPath))
-    return cwdPath;
-  const outDir = outputDirForClient(context.options);
-  return path.resolve(outDir, inputPath);
-}
 
 function resolveProperties(params: { preset?: StylePreset, properties?: string[] }): string[] {
   const preset = params.preset ? STYLE_PRESETS[params.preset] : [];
@@ -192,14 +183,14 @@ function resolveProperties(params: { preset?: StylePreset, properties?: string[]
 }
 
 async function collectForTarget(
-  tab: Tab,
-  target: { ref: string, element: string },
+  locator: playwright.Locator,
+  target: string,
+  element: string | undefined,
   props: string[],
   includeLayout: boolean,
   includeText: boolean
-): Promise<Omit<CapturedTarget, 'ref' | 'element'>> {
-  const { locator } = await tab.targetLocator({ target: target.ref, element: target.element });
-  return await locator.evaluate((el, options) => {
+): Promise<CapturedTarget> {
+  const payload = await locator.evaluate((el, options) => {
     const computed = window.getComputedStyle(el as HTMLElement);
     const styles: Record<string, string> = {};
     for (const prop of options.props)
@@ -224,75 +215,91 @@ async function collectForTarget(
       id: (el as HTMLElement).id || null,
       className: typeof (el as HTMLElement).className === 'string' ? (el as HTMLElement).className : null,
       text: options.includeText ? ((el as HTMLElement).textContent || '').trim().slice(0, 200) : null,
-      styles,
+      styles: options.props.length ? styles : undefined,
       layout: options.includeLayout ? layout : undefined,
     };
   }, { props, includeLayout, includeText });
+  return { target, element, ...payload };
+}
+
+function isMissingFile(error: unknown): boolean {
+  return error instanceof Error && 'code' in error && error.code === 'ENOENT';
+}
+
+async function readBaseline(response: Response, inputPath: string, label: string): Promise<string | undefined> {
+  const resolvedPath = await response.resolveClientFilename(inputPath);
+  try {
+    return await fs.promises.readFile(resolvedPath, 'utf8');
+  } catch (error) {
+    if (!isMissingFile(error))
+      throw error;
+    response.addError(`${label} baseline file not found: ${inputPath}`);
+    return undefined;
+  }
+}
+
+async function saveFile(response: Response, filename: string, prefix: string, ext: string, title: string, data: string) {
+  const resolvedFile = await response.resolveClientOutputFile({ prefix, ext, suggestedFilename: filename }, title);
+  await response.addFileResult(resolvedFile, data);
 }
 
 function diffStyleSnapshots(expected: unknown, actual: unknown): SnapshotDiff[] {
   const diffs: SnapshotDiff[] = [];
-  const expectedByRef = new Map(snapshotTargets(expected).map(target => [target.ref, target]));
-  const actualByRef = new Map(snapshotTargets(actual).map(target => [target.ref, target]));
-  for (const [ref, expectedTarget] of expectedByRef.entries()) {
-    const actualTarget = actualByRef.get(ref);
+  const expectedByTarget = new Map(snapshotTargets(expected).map(target => [target.target, target]));
+  const actualByTarget = new Map(snapshotTargets(actual).map(target => [target.target, target]));
+  for (const [target, expectedTarget] of expectedByTarget.entries()) {
+    const actualTarget = actualByTarget.get(target);
     if (!actualTarget) {
-      diffs.push({ ref, type: 'missing', message: 'Target missing in current snapshot' });
+      diffs.push({ target, type: 'missing', message: 'Target missing in current snapshot' });
       continue;
     }
     const expectedStyles = expectedTarget.styles || {};
     const actualStyles = actualTarget.styles || {};
     for (const key of Object.keys(expectedStyles)) {
       if (expectedStyles[key] !== actualStyles[key])
-        diffs.push({ ref, type: 'style', property: key, expected: expectedStyles[key], actual: actualStyles[key] });
+        diffs.push({ target, type: 'style', property: key, expected: expectedStyles[key], actual: actualStyles[key] });
     }
   }
-  for (const [ref] of actualByRef.entries()) {
-    if (!expectedByRef.has(ref))
-      diffs.push({ ref, type: 'extra', message: 'Target missing in baseline snapshot' });
+  for (const [target] of actualByTarget.entries()) {
+    if (!expectedByTarget.has(target))
+      diffs.push({ target, type: 'extra', message: 'Target missing in baseline snapshot' });
   }
   return diffs;
 }
 
 function diffLayoutSnapshots(expected: unknown, actual: unknown): SnapshotDiff[] {
   const diffs: SnapshotDiff[] = [];
-  const expectedByRef = new Map(snapshotTargets(expected).map(target => [target.ref, target]));
-  const actualByRef = new Map(snapshotTargets(actual).map(target => [target.ref, target]));
-  for (const [ref, expectedTarget] of expectedByRef.entries()) {
-    const actualTarget = actualByRef.get(ref);
+  const expectedByTarget = new Map(snapshotTargets(expected).map(target => [target.target, target]));
+  const actualByTarget = new Map(snapshotTargets(actual).map(target => [target.target, target]));
+  for (const [target, expectedTarget] of expectedByTarget.entries()) {
+    const actualTarget = actualByTarget.get(target);
     if (!actualTarget) {
-      diffs.push({ ref, type: 'missing', message: 'Target missing in current snapshot' });
+      diffs.push({ target, type: 'missing', message: 'Target missing in current snapshot' });
       continue;
     }
     const expectedLayout: Partial<LayoutMetrics> = expectedTarget.layout || {};
     const actualLayout: Partial<LayoutMetrics> = actualTarget.layout || {};
     for (const key of Object.keys(expectedLayout) as (keyof LayoutMetrics)[]) {
       if (expectedLayout[key] !== actualLayout[key])
-        diffs.push({ ref, type: 'layout', property: key, expected: expectedLayout[key], actual: actualLayout[key] });
+        diffs.push({ target, type: 'layout', property: key, expected: expectedLayout[key], actual: actualLayout[key] });
     }
   }
-  for (const [ref] of actualByRef.entries()) {
-    if (!expectedByRef.has(ref))
-      diffs.push({ ref, type: 'extra', message: 'Target missing in baseline snapshot' });
+  for (const [target] of actualByTarget.entries()) {
+    if (!expectedByTarget.has(target))
+      diffs.push({ target, type: 'extra', message: 'Target missing in baseline snapshot' });
   }
   return diffs;
 }
-
-const targetSchema = z.object({
-  element: z.string().describe('Human-readable element description'),
-  ref: z.string().describe('Exact target element reference'),
-});
-
 const styleSnapshot = defineTabTool({
   capability: 'styles',
   schema: {
     name: 'browser_style_snapshot',
     title: 'Style snapshot',
-    description: 'Capture computed style snapshot for specific elements',
+    description: 'Capture computed styles for targets. The default preset is typography; the output records the effective preset and exact properties captured.',
     inputSchema: z.object({
-      targets: z.array(targetSchema).describe('Elements to capture styles for'),
-      properties: z.array(z.string()).optional().describe('CSS properties to capture'),
-      preset: z.enum(['typography', 'box', 'layout', 'codeblock']).optional().describe('Preset property group'),
+      targets: z.array(elementSchema).describe('Elements to capture styles for'),
+      properties: z.array(z.string()).optional().describe('CSS properties to capture in addition to any preset'),
+      preset: z.enum(['typography', 'box', 'layout', 'codeblock']).optional().describe('Preset property group (default typography)'),
       includeLayout: z.boolean().optional().describe('Include layout metrics in snapshot'),
       includeText: z.boolean().optional().describe('Include truncated text content'),
       filename: z.string().optional().describe('File name to save snapshot to'),
@@ -302,25 +309,24 @@ const styleSnapshot = defineTabTool({
 
   handle: async (tab, params, response) => {
     const props = resolveProperties(params);
-    const targets: CapturedTarget[] = [];
-    for (const target of params.targets)
-      targets.push({ ref: target.ref, element: target.element, ...(await collectForTarget(tab, target, props, params.includeLayout === true, params.includeText === true)) });
+    const preset = params.preset ?? (params.properties?.length ? 'custom' : 'typography');
+    const resolvedTargets = await tab.targetLocators(params.targets);
+    const targets = await Promise.all(resolvedTargets.map(({ locator }, index) =>
+      collectForTarget(locator, params.targets[index].target, params.targets[index].element, props, params.includeLayout === true, params.includeText === true)));
 
     const snapshot = {
       createdAt: new Date().toISOString(),
       url: tab.page.url(),
+      preset,
       properties: props,
       targets,
     };
     const payload = JSON.stringify(snapshot, null, 2);
 
-    if (params.filename) {
-      const fileName = await response.resolveClientFilename(params.filename);
-      await fs.promises.writeFile(fileName, payload, 'utf8');
-      response.addTextResult(`Saved style snapshot to ${fileName}`);
-    } else {
+    if (params.filename)
+      await saveFile(response, params.filename, 'style-snapshot', 'json', 'Style snapshot', payload);
+    else
       response.addTextResult(payload);
-    }
   }
 });
 
@@ -329,10 +335,10 @@ const styleDiff = defineTabTool({
   schema: {
     name: 'browser_style_diff',
     title: 'Style snapshot diff',
-    description: 'Compare computed style snapshot against baseline',
+    description: 'Compare computed style snapshot against a baseline',
     inputSchema: z.object({
       baselinePath: z.string().describe('Path to baseline style snapshot JSON'),
-      targets: z.array(targetSchema).describe('Elements to capture styles for'),
+      targets: z.array(elementSchema).describe('Elements to capture styles for'),
       properties: z.array(z.string()).optional().describe('CSS properties to capture'),
       preset: z.enum(['typography', 'box', 'layout', 'codeblock']).optional().describe('Preset property group'),
       includeLayout: z.boolean().optional().describe('Include layout metrics in snapshot'),
@@ -345,40 +351,38 @@ const styleDiff = defineTabTool({
   },
 
   handle: async (tab, params, response) => {
+    const baselineRaw = await readBaseline(response, params.baselinePath, 'Style snapshot');
+    if (baselineRaw === undefined)
+      return;
     const props = resolveProperties(params);
-    const targets: CapturedTarget[] = [];
-    for (const target of params.targets)
-      targets.push({ ref: target.ref, element: target.element, ...(await collectForTarget(tab, target, props, params.includeLayout === true, params.includeText === true)) });
-
+    const resolvedTargets = await tab.targetLocators(params.targets);
+    const targets = await Promise.all(resolvedTargets.map(({ locator }, index) =>
+      collectForTarget(locator, params.targets[index].target, params.targets[index].element, props, params.includeLayout === true, params.includeText === true)));
     const snapshot = {
       createdAt: new Date().toISOString(),
       url: tab.page.url(),
+      preset: params.preset ?? (params.properties?.length ? 'custom' : 'typography'),
       properties: props,
       targets,
     };
 
-    const baselinePath = resolveMaybeRelative(tab.context, params.baselinePath);
-    const baselineRaw = await fs.promises.readFile(baselinePath, 'utf8');
     const baseline = JSON.parse(baselineRaw);
     const diffs = diffStyleSnapshots(baseline, snapshot);
-
     if (!diffs.length) {
       response.addTextResult('Style snapshot matches baseline.');
       return;
     }
 
-    if (params.diffPath) {
-      const diffFile = await response.resolveClientFilename(params.diffPath);
-      await fs.promises.writeFile(diffFile, JSON.stringify(diffs, null, 2), 'utf8');
-    }
+    if (params.diffPath)
+      await saveFile(response, params.diffPath, 'style-diff', 'json', 'Style snapshot diff', JSON.stringify(diffs, null, 2));
 
-    const maxDiffs = params.maxDiffs || 20;
-    const excerpt = diffs.slice(0, maxDiffs).map(d => JSON.stringify(d)).join('\n');
-    const message = `Style snapshot differs from baseline (${diffs.length} changes).\n${excerpt}`;
-    if (params.failOnDiff !== false)
-      response.addError(message);
-    else
-      response.addTextResult(message);
+    const excerpt = diffs.slice(0, params.maxDiffs || 20).map(d => JSON.stringify(d)).join('\n');
+    if (params.failOnDiff !== false) {
+      response.addTextResult(excerpt);
+      response.addError(`Style snapshot differs from baseline (${diffs.length} changes).`);
+    } else {
+      response.addTextResult(`Style snapshot differs from baseline (${diffs.length} changes).\n${excerpt}`);
+    }
   }
 });
 
@@ -387,9 +391,9 @@ const layoutSnapshot = defineTabTool({
   schema: {
     name: 'browser_layout_snapshot',
     title: 'Layout snapshot',
-    description: 'Capture layout metrics for specific elements',
+    description: 'Capture layout metrics for specific targets',
     inputSchema: z.object({
-      targets: z.array(targetSchema).describe('Elements to capture layout for'),
+      targets: z.array(elementSchema).describe('Elements to capture layout for'),
       includeText: z.boolean().optional().describe('Include truncated text content'),
       filename: z.string().optional().describe('File name to save snapshot to'),
     }),
@@ -397,35 +401,9 @@ const layoutSnapshot = defineTabTool({
   },
 
   handle: async (tab, params, response) => {
-    const targets: CapturedTarget[] = [];
-    for (const target of params.targets) {
-      const { locator } = await tab.targetLocator({ target: target.ref, element: target.element });
-      const payload = await locator.evaluate((el, options) => {
-        const rect = (el as HTMLElement).getBoundingClientRect();
-        return {
-          tag: (el as HTMLElement).tagName,
-          id: (el as HTMLElement).id || null,
-          className: typeof (el as HTMLElement).className === 'string' ? (el as HTMLElement).className : null,
-          text: options.includeText ? ((el as HTMLElement).textContent || '').trim().slice(0, 200) : null,
-          layout: {
-            x: rect.x,
-            y: rect.y,
-            width: rect.width,
-            height: rect.height,
-            top: rect.top,
-            right: rect.right,
-            bottom: rect.bottom,
-            left: rect.left,
-            scrollWidth: (el as HTMLElement).scrollWidth,
-            scrollHeight: (el as HTMLElement).scrollHeight,
-            clientWidth: (el as HTMLElement).clientWidth,
-            clientHeight: (el as HTMLElement).clientHeight,
-          }
-        };
-      }, { includeText: params.includeText === true });
-      targets.push({ ref: target.ref, element: target.element, ...payload });
-    }
-
+    const resolvedTargets = await tab.targetLocators(params.targets);
+    const targets = await Promise.all(resolvedTargets.map(({ locator }, index) =>
+      collectForTarget(locator, params.targets[index].target, params.targets[index].element, [], true, params.includeText === true)));
     const snapshot = {
       createdAt: new Date().toISOString(),
       url: tab.page.url(),
@@ -433,13 +411,10 @@ const layoutSnapshot = defineTabTool({
     };
     const payload = JSON.stringify(snapshot, null, 2);
 
-    if (params.filename) {
-      const fileName = await response.resolveClientFilename(params.filename);
-      await fs.promises.writeFile(fileName, payload, 'utf8');
-      response.addTextResult(`Saved layout snapshot to ${fileName}`);
-    } else {
+    if (params.filename)
+      await saveFile(response, params.filename, 'layout-snapshot', 'json', 'Layout snapshot', payload);
+    else
       response.addTextResult(payload);
-    }
   }
 });
 
@@ -448,10 +423,10 @@ const layoutDiff = defineTabTool({
   schema: {
     name: 'browser_layout_diff',
     title: 'Layout snapshot diff',
-    description: 'Compare layout snapshot against baseline',
+    description: 'Compare layout snapshot against a baseline',
     inputSchema: z.object({
       baselinePath: z.string().describe('Path to baseline layout snapshot JSON'),
-      targets: z.array(targetSchema).describe('Elements to capture layout for'),
+      targets: z.array(elementSchema).describe('Elements to capture layout for'),
       includeText: z.boolean().optional().describe('Include truncated text content'),
       diffPath: z.string().optional().describe('File path to save diff JSON'),
       failOnDiff: z.boolean().optional().describe('Whether to fail when diff is detected (default true)'),
@@ -461,63 +436,35 @@ const layoutDiff = defineTabTool({
   },
 
   handle: async (tab, params, response) => {
-    const targets: CapturedTarget[] = [];
-    for (const target of params.targets) {
-      const { locator } = await tab.targetLocator({ target: target.ref, element: target.element });
-      const payload = await locator.evaluate((el, options) => {
-        const rect = (el as HTMLElement).getBoundingClientRect();
-        return {
-          tag: (el as HTMLElement).tagName,
-          id: (el as HTMLElement).id || null,
-          className: typeof (el as HTMLElement).className === 'string' ? (el as HTMLElement).className : null,
-          text: options.includeText ? ((el as HTMLElement).textContent || '').trim().slice(0, 200) : null,
-          layout: {
-            x: rect.x,
-            y: rect.y,
-            width: rect.width,
-            height: rect.height,
-            top: rect.top,
-            right: rect.right,
-            bottom: rect.bottom,
-            left: rect.left,
-            scrollWidth: (el as HTMLElement).scrollWidth,
-            scrollHeight: (el as HTMLElement).scrollHeight,
-            clientWidth: (el as HTMLElement).clientWidth,
-            clientHeight: (el as HTMLElement).clientHeight,
-          }
-        };
-      }, { includeText: params.includeText === true });
-      targets.push({ ref: target.ref, element: target.element, ...payload });
-    }
-
+    const baselineRaw = await readBaseline(response, params.baselinePath, 'Layout snapshot');
+    if (baselineRaw === undefined)
+      return;
+    const resolvedTargets = await tab.targetLocators(params.targets);
+    const targets = await Promise.all(resolvedTargets.map(({ locator }, index) =>
+      collectForTarget(locator, params.targets[index].target, params.targets[index].element, [], true, params.includeText === true)));
     const snapshot = {
       createdAt: new Date().toISOString(),
       url: tab.page.url(),
       targets,
     };
 
-    const baselinePath = resolveMaybeRelative(tab.context, params.baselinePath);
-    const baselineRaw = await fs.promises.readFile(baselinePath, 'utf8');
     const baseline = JSON.parse(baselineRaw);
     const diffs = diffLayoutSnapshots(baseline, snapshot);
-
     if (!diffs.length) {
       response.addTextResult('Layout snapshot matches baseline.');
       return;
     }
 
-    if (params.diffPath) {
-      const diffFile = await response.resolveClientFilename(params.diffPath);
-      await fs.promises.writeFile(diffFile, JSON.stringify(diffs, null, 2), 'utf8');
-    }
+    if (params.diffPath)
+      await saveFile(response, params.diffPath, 'layout-diff', 'json', 'Layout snapshot diff', JSON.stringify(diffs, null, 2));
 
-    const maxDiffs = params.maxDiffs || 20;
-    const excerpt = diffs.slice(0, maxDiffs).map(d => JSON.stringify(d)).join('\n');
-    const message = `Layout snapshot differs from baseline (${diffs.length} changes).\n${excerpt}`;
-    if (params.failOnDiff !== false)
-      response.addError(message);
-    else
-      response.addTextResult(message);
+    const excerpt = diffs.slice(0, params.maxDiffs || 20).map(d => JSON.stringify(d)).join('\n');
+    if (params.failOnDiff !== false) {
+      response.addTextResult(excerpt);
+      response.addError(`Layout snapshot differs from baseline (${diffs.length} changes).`);
+    } else {
+      response.addTextResult(`Layout snapshot differs from baseline (${diffs.length} changes).\n${excerpt}`);
+    }
   }
 });
 

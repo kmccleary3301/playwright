@@ -31,6 +31,12 @@ const collectLongTasks = defineTabTool({
   },
 
   handle: async (tab, params, response) => {
+    const browserName = tab.page.context().browser()?.browserType().name();
+    if (browserName !== 'chromium') {
+      response.addError(`Long task collection is only supported in Chromium (current browser: ${browserName || 'unknown'}).`);
+      return;
+    }
+
     const duration = params.durationMs || 1000;
     const entries = await tab.page.evaluate(async durationMs => {
       if (typeof PerformanceObserver === 'undefined')
@@ -58,7 +64,7 @@ const collectLongTasks = defineTabTool({
     }, duration);
 
     if (!entries.supported) {
-      response.addTextResult('Long task API not supported in this context.');
+      response.addError('The Long Task API is not supported in this Chromium context.');
       return;
     }
 
