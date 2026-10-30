@@ -23,16 +23,17 @@ const navigate = defineTool({
   schema: {
     name: 'browser_navigate',
     title: 'Navigate to a URL',
-    description: 'Navigate to a URL',
+    description: 'Navigate to a URL. Use waitUntil to choose when navigation is considered complete, such as waiting for all resources with "load" or for network activity to settle with "networkidle".',
     inputSchema: z.object({
       url: z.string().describe('The URL to navigate to'),
+      waitUntil: z.enum(['commit', 'domcontentloaded', 'load', 'networkidle']).optional().describe('Navigation lifecycle event to wait for. Use "load" for resources such as images and scripts, or "networkidle" when network activity must settle.'),
     }),
     type: 'action',
   },
 
   handle: async (context, params, response) => {
     const tab = await context.ensureTab();
-    const url = await tab.checkUrlAndNavigate(params.url);
+    const url = await tab.checkUrlAndNavigate(params.url, params.waitUntil);
 
     response.setIncludeSnapshot();
     response.addAction({ name: 'navigate', url });

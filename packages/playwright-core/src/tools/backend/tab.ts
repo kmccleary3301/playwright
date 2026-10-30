@@ -73,6 +73,8 @@ type RequestLogEntry = {
 };
 
 type EventEntry = ConsoleLogEntry | DownloadStartLogEntry | DownloadFinishLogEntry | RequestLogEntry;
+type NavigationWaitUntil = 'commit' | 'domcontentloaded' | 'load' | 'networkidle';
+
 
 
 export type TabHeader = {
@@ -284,7 +286,7 @@ export class Tab extends EventEmitter<TabEventsInterface> {
   }
 
   logErrorMessage(text: string) {
-    this._handleConsoleMessage(pageErrorToConsoleMessage(new Error(text)));
+    this._handleConsoleMessage({ ...pageErrorToConsoleMessage(new Error(text)), source: 'internal' });
   }
 
   private _addLogEntry(entry: EventEntry) {
@@ -332,7 +334,7 @@ export class Tab extends EventEmitter<TabEventsInterface> {
     await this.page.waitForLoadState(state, options).catch(e => debug('pw:tools:error')(e));
   }
 
-  async checkUrlAndNavigate(url: string): Promise<string> {
+  async checkUrlAndNavigate(url: string, waitUntil?: NavigationWaitUntil): Promise<string> {
     try {
       new URL(url);
     } catch (e) {
@@ -342,11 +344,11 @@ export class Tab extends EventEmitter<TabEventsInterface> {
         url = 'https://' + url;
     }
     this.context.checkUrlAllowed(url);
-    await this.navigate(url);
+    await this.navigate(url, waitUntil);
     return url;
   }
 
-  async navigate(url: string) {
+  async navigate(url: string, waitUntil?: NavigationWaitUntil) {
     await this._initializedPromise;
 
     this._clearCollectedArtifacts();
@@ -355,7 +357,7 @@ export class Tab extends EventEmitter<TabEventsInterface> {
     let modalStates: ModalState[];
     try {
       modalStates = await this._raceAgainstModalStates(async () => {
-        await this.page.goto(url, { waitUntil: 'domcontentloaded', ...this.navigationTimeoutOptions });
+        await this.page.goto(url, { waitUntil: waitUntil ?? 'domcontentloaded', ...this.navigationTimeoutOptions });
       });
       abortDownloadEvent();
     } catch (_e: unknown) {
@@ -374,8 +376,10 @@ export class Tab extends EventEmitter<TabEventsInterface> {
     if (modalStates.length)
       return;
 
-    // Cap load event to 5 seconds, the page is operational at this point.
-    await this.waitForLoadState('load', { timeout: 5000 });
+    if (!waitUntil) {
+      // Cap load event to 5 seconds, the page is operational at this point.
+      await this.waitForLoadState('load', { timeout: 5000 });
+    }
   }
 
   async reload() {
@@ -474,17 +478,14 @@ export class Tab extends EventEmitter<TabEventsInterface> {
       // events are still reported via the shared tail below.
       tabSnapshot = { ariaSnapshot: '', modalStates: [], events: [] };
     }
-    if (tabSnapshot) {
-      tabSnapshot.consoleLink = await this._consoleLog.take(relativeTo);
-      tabSnapshot.events = this._recentEventEntries;
-      this._recentEventEntries = [];
-    }
-
     const result = tabSnapshot ?? {
       ariaSnapshot: '',
       modalStates,
       events: [],
     };
+    result.consoleLink = await this._consoleLog.take(relativeTo);
+    result.events = this._recentEventEntries;
+    this._recentEventEntries = [];
     if (webmcpPromise)
       await this._raceAgainstModalStates(() => webmcpPromise);
     return result;
@@ -573,6 +574,7 @@ export class Tab extends EventEmitter<TabEventsInterface> {
 
 export type ConsoleMessage = {
   type: ReturnType<playwright.ConsoleMessage['type']>;
+  source: 'console' | 'pageerror' | 'internal';
   timestamp: number;
   text: string;
   toString(): string;
@@ -605,6 +607,7 @@ function targetErrorMessage(target: string, isSelector: boolean): string {
 function messageToConsoleMessage(message: playwright.ConsoleMessage): ConsoleMessage {
   return {
     type: message.type(),
+    source: 'console',
     timestamp: message.timestamp(),
     text: message.text(),
     toString: () => `[${message.type().toUpperCase()}] ${message.text()} @ ${message.location().url}:${message.location().lineNumber}`,
@@ -615,6 +618,7 @@ function pageErrorToConsoleMessage(errorOrValue: Error | any): ConsoleMessage {
   if (errorOrValue instanceof Error) {
     return {
       type: 'error',
+      source: 'pageerror',
       timestamp: Date.now(),
       text: errorOrValue.message,
       toString: () => errorOrValue.stack || errorOrValue.message,
@@ -622,6 +626,7 @@ function pageErrorToConsoleMessage(errorOrValue: Error | any): ConsoleMessage {
   }
   return {
     type: 'error',
+    source: 'pageerror',
     timestamp: Date.now(),
     text: String(errorOrValue),
     toString: () => String(errorOrValue),

@@ -324,6 +324,39 @@ export class Response {
       }
     }
 
+    // Handle new console, page, and network errors.
+    if (tabSnapshot) {
+      const consoleErrors: string[] = [];
+      const pageErrors: string[] = [];
+      const failedRequests: string[] = [];
+      const seenRequests = new Set<playwright.Request>();
+      for (const event of tabSnapshot.events) {
+        if (event.type === 'console') {
+          if (event.message.source === 'pageerror')
+            pageErrors.push(compactLine(event.message.text, 200));
+          else if (event.message.source === 'console' && (event.message.type === 'error' || event.message.type === 'assert'))
+            consoleErrors.push(compactLine(event.message.text, 200));
+        } else if (event.type === 'request' && !seenRequests.has(event.request)) {
+          seenRequests.add(event.request);
+          const response = event.request.existingResponse();
+          const failure = event.request.failure();
+          if (failure) {
+            failedRequests.push(`[${event.request.method().toUpperCase()}] ${compactLine(event.request.url(), 150)} => [FAILED] ${compactLine(failure.errorText, 200)}`);
+          } else if (response && response.status() >= 400) {
+            const statusText = compactLine(response.statusText(), 200);
+            failedRequests.push(`[${event.request.method().toUpperCase()}] ${compactLine(event.request.url(), 150)} => [${response.status()}]${statusText ? ' ' + statusText : ''}`);
+          }
+        }
+      }
+
+      const errors: string[] = [];
+      addErrorCategory(errors, 'Console errors', consoleErrors);
+      addErrorCategory(errors, 'Uncaught page errors', pageErrors);
+      addErrorCategory(errors, 'Failed requests', failedRequests);
+      if (errors.length)
+        addSection('New errors', errors);
+    }
+
     // Handle tab log
     const text: string[] = [];
     if (tabSnapshot?.consoleLink)
@@ -349,6 +382,23 @@ export class Response {
     return sections;
   }
 }
+
+function addErrorCategory(lines: string[], title: string, entries: string[]) {
+  if (!entries.length)
+    return;
+  lines.push(`- ${title}:`);
+  const limit = 10;
+  for (let i = 0; i < Math.min(entries.length, limit); i++)
+    lines.push(`  - ${entries[i]}`);
+  if (entries.length > limit)
+    lines.push(`  - (+${entries.length - limit} more)`);
+}
+
+function compactLine(text: string, maxLength: number): string {
+  const line = text.replace(/\s+/g, ' ').trim();
+  return line.length > maxLength ? line.slice(0, maxLength - 1) + '…' : line;
+}
+
 
 export function renderTabMarkdown(tab: TabHeader): string[] {
   const lines = [`- Page URL: ${tab.url}`];
