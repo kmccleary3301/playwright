@@ -382,12 +382,12 @@ const cssRules = defineTabTool({
   schema: {
     name: 'browser_css_rules',
     title: 'Authored CSS rules',
-    description: 'Show the authored CSS rules and computed values for an element.',
+    description: 'Inspect element CSS: cascade, computed styles. Chromium only.',
     inputSchema: elementSchema.extend({
       pseudoState: z.array(z.enum(pseudoStates)).optional().describe('Pseudo states to force while collecting rules.'),
       includeInherited: z.boolean().optional().default(false).describe('Include rules from ancestor elements.'),
       includeUserAgent: z.boolean().optional().default(false).describe('Include user-agent stylesheet rules.'),
-      properties: z.array(z.string()).optional().describe('Only include these CSS properties in every section.'),
+      properties: z.array(z.string()).optional().describe('Limit each section to these CSS properties.'),
     }),
     type: 'readOnly',
   },

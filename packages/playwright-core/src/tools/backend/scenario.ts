@@ -177,10 +177,10 @@ const runScenario = defineTabTool({
   schema: {
     name: 'browser_run_scenario',
     title: 'Run scenario',
-    description: 'Run a Markdown scenario file with deterministic steps',
+    description: 'Run a Markdown scenario file; debug mode records a trace.',
     inputSchema: z.object({
-      file: z.string().describe('Path to scenario markdown file'),
-      mode: z.enum(['spec', 'debug']).optional().describe('Execution mode (spec or debug)'),
+      file: z.string().describe('Path to scenario Markdown file'),
+      mode: z.enum(['spec', 'debug']).optional().describe('Mode: spec (normal) or debug (record a trace).'),
       baseUrl: z.string().optional().describe('Base URL override'),
     }),
     type: 'action',

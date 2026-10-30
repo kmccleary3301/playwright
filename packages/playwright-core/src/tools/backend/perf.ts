@@ -23,9 +23,9 @@ const collectLongTasks = defineTabTool({
   schema: {
     name: 'browser_collect_longtasks',
     title: 'Collect long tasks',
-    description: 'Collect long task entries over a duration (in ms)',
+    description: 'Record main-thread long tasks over a time window; Chromium only.',
     inputSchema: z.object({
-      durationMs: z.number().optional().describe('Duration to observe long tasks, in ms (default 1000)'),
+      durationMs: z.number().optional().describe('Observation duration in milliseconds (default 1000).'),
     }),
     type: 'readOnly',
   },
