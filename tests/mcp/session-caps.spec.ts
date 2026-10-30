@@ -62,10 +62,11 @@ test('streamable HTTP sessions select enabled capability groups', async ({ serve
     expect(diffTools.tools.map(tool => tool.name)).toContain('browser_dom_diff');
     expect(diffTools.tools.map(tool => tool.name)).not.toContain('browser_css_rules');
     const diffInstructions = diffSession.client.getInstructions() ?? '';
-    expect(diffInstructions.length).toBeLessThanOrEqual(1500);
+    expect(diffInstructions.length).toBeLessThanOrEqual(4000);
     expect(diffInstructions).toContain('browser_snapshot with depth=3');
-    expect(diffInstructions).toContain('diffs:');
-    expect(diffInstructions).not.toContain('styles:');
+    expect(diffInstructions).toContain('browser_dom_diff');
+    expect(diffInstructions).not.toContain('browser_css_rules');
+    expect(diffInstructions).toMatch(/Not enabled in this session:.*styles \(/);
 
     const unavailableStyleTool = await diffSession.client.callTool({ name: 'browser_css_rules', arguments: {} });
     expect(unavailableStyleTool.isError).toBe(true);
@@ -73,14 +74,15 @@ test('streamable HTTP sessions select enabled capability groups', async ({ serve
     const allTools = await allSession.client.listTools();
     expect(allTools.tools.map(tool => tool.name)).toContain('browser_dom_diff');
     expect(allTools.tools.map(tool => tool.name)).toContain('browser_css_rules');
-    expect(allSession.client.getInstructions()).toContain('styles:');
+    expect(allSession.client.getInstructions()).toContain('browser_css_rules');
+    expect(allSession.client.getInstructions()).not.toContain('styles (');
 
     const coreTools = await coreSession.client.listTools();
     expect(coreTools.tools.map(tool => tool.name)).toContain('browser_snapshot');
     expect(coreTools.tools.map(tool => tool.name)).not.toContain('browser_dom_diff');
     expect(coreTools.tools.map(tool => tool.name)).not.toContain('browser_css_rules');
-    expect(coreSession.client.getInstructions()).not.toContain('diffs:');
-    expect(coreSession.client.getInstructions()).not.toContain('styles:');
+    expect(coreSession.client.getInstructions()).not.toContain('browser_dom_diff');
+    expect(coreSession.client.getInstructions()).toMatch(/Not enabled in this session:.*diffs \(.*styles \(/);
   } finally {
     await Promise.all([diffSession.close(), allSession.close(), coreSession.close()]);
   }
@@ -95,8 +97,8 @@ test('legacy SSE session uses caps from its endpoint URL', async ({ serverEndpoi
     const tools = await client.listTools();
     expect(tools.tools.map(tool => tool.name)).toContain('browser_dom_diff');
     expect(tools.tools.map(tool => tool.name)).not.toContain('browser_css_rules');
-    expect(client.getInstructions()).toContain('diffs:');
-    expect(client.getInstructions()).not.toContain('styles:');
+    expect(client.getInstructions()).toContain('browser_dom_diff');
+    expect(client.getInstructions()).not.toContain('browser_css_rules');
   } finally {
     await client.close();
   }

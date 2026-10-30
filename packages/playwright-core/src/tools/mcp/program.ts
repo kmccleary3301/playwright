@@ -20,7 +20,7 @@ import { commaSeparatedList, defaultCodegenLanguage, dotenvFileLoader, enumParse
 import { setupExitWatchdog } from './watchdog';
 import { connectToBrowserEndpoint, createBrowserWithInfo, createIdleTimer } from './browserFactory';
 import { BrowserBackend } from '../backend/browserBackend';
-import { filteredTools } from '../backend/tools';
+import { ToolCatalog } from './toolCatalog';
 import { testDebug } from './log';
 import { packageJSON } from '../../package';
 
@@ -82,6 +82,7 @@ export function decorateMCPCommand(command: Command) {
       .option('--timeout-action <timeout>', 'specify action timeout in milliseconds, defaults to 5000ms', numberParser)
       .option('--timeout-navigation <timeout>', 'specify navigation timeout in milliseconds, defaults to 60000ms', numberParser)
       .option('--timeout-settle <timeout>', 'how long to wait after each action for triggered work to settle, in milliseconds, defaults to 500ms', numberParser)
+      .option('--tool-groups', 'list related tools as one tool that takes an "action" argument, for example browser_cookies instead of five browser_cookie_* tools. Fewer tools are easier for a model to choose from.')
       .option('--user-agent <ua string>', 'specify user agent string')
       .option('--user-data-dir <path>', 'path to the user data directory. If not specified, a temporary directory will be created.')
       .option('--viewport-size <size>', 'specify browser viewport size in pixels, for example "1280x720"', resolutionParser.bind(null, '--viewport-size'))
@@ -100,7 +101,7 @@ export function decorateMCPCommand(command: Command) {
           options.caps.push('devtools');
 
         const config = await resolveCLIConfigForMCP(options);
-        const tools = filteredTools(config);
+        const catalog = new ToolCatalog({ toolGroups: config.toolGroups });
         const useSharedBrowser = config.sharedBrowserContext || config.browser.isolated;
         let sharedBrowserPromise: Promise<BrowserWithInfo> | undefined;
         let clientCount = 0;
@@ -112,10 +113,11 @@ export function decorateMCPCommand(command: Command) {
           nameInConfig: 'playwright',
           version,
           enabledCapabilities,
-          toolSchemas: tools.map(tool => tool.schema),
-          toolSchemasForCapabilities: capabilities => filteredTools({ capabilities }).map(tool => tool.schema),
+          toolSchemas: catalog.session(enabledCapabilities).schemas,
+          toolSchemasForCapabilities: capabilities => catalog.session(capabilities).schemas,
+          instructions: capabilities => catalog.session(capabilities).instructions,
           create: async (clientInfo: ClientInfo, sessionOptions) => {
-            const sessionTools = sessionOptions ? filteredTools({ capabilities: sessionOptions.capabilities }) : tools;
+            const session = catalog.session(sessionOptions?.capabilities ?? enabledCapabilities);
             if (useSharedBrowser && !sharedBrowserPromise) {
               const promise = createBrowserWithInfo(config, clientInfo, options, { title: clientInfo.clientName, workspaceDir: clientInfo.cwd }).then(shared => {
                 shared.browser.once('disconnected', () => {
@@ -168,7 +170,7 @@ export function decorateMCPCommand(command: Command) {
             // Otherwise an idle client keeps its context open while other clients are active.
             const clientIdleTimer = shared && config.browser.isolated ? createIdleTimer(config, shared.ownership, () => browserContext.close().catch(() => { })) : undefined;
 
-            return new BrowserBackend(config, browserContext, sessionTools, {
+            return session.wrap(new BrowserBackend(config, browserContext, session.tools, {
               idleTimer: clientIdleTimer ?? info.idleTimer,
               dispose: async () => {
                 clientIdleTimer?.dispose();
@@ -193,7 +195,7 @@ export function decorateMCPCommand(command: Command) {
                 await browser.close().catch(() => { });
                 await shared?.browser.close().catch(() => { });
               },
-            });
+            }));
           },
         };
         await mcpServer.start(factory, config.server);

@@ -145,6 +145,13 @@ export type Config = {
   capabilities?: ToolCapability[];
 
   /**
+   * List related tools as one tool that takes an `action` argument, for example `browser_cookies`
+   * instead of five `browser_cookie_*` tools. Fewer tools are easier for a model to choose from.
+   * Defaults to false.
+   */
+  toolGroups?: boolean;
+
+  /**
    * Whether to save the Playwright session into the output directory.
    */
   saveSession?: boolean;

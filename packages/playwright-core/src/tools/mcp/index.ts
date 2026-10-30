@@ -15,7 +15,7 @@
  */
 
 import { resolveConfig } from './config';
-import { filteredTools } from '../backend/tools';
+import { ToolCatalog } from './toolCatalog';
 import { createBrowserWithInfo } from './browserFactory';
 import { BrowserBackend } from '../backend/browserBackend';
 import { createServer } from '../utils/mcp/server';
@@ -28,18 +28,21 @@ import type { Config } from './config.d';
 
 export async function createConnection(userConfig: Config = {}, contextGetter?: () => Promise<BrowserContext>): Promise<Server> {
   const config = await resolveConfig(userConfig);
-  const tools = filteredTools(config);
+  const capabilities = config.capabilities ?? [];
+  const session = new ToolCatalog({ toolGroups: config.toolGroups }).session(capabilities);
   const backendFactory: ServerBackendFactory = {
     name: 'api',
     nameInConfig: 'api',
     version: packageJSON.version,
-    toolSchemas: tools.map(tool => tool.schema),
+    enabledCapabilities: capabilities,
+    toolSchemas: session.schemas,
+    instructions: () => session.instructions,
     create: async (clientInfo: ClientInfo) => {
       const browser = contextGetter
         ? new SimpleBrowser(await contextGetter())
         : (await createBrowserWithInfo(config, clientInfo, {}, { title: clientInfo.clientName, workspaceDir: clientInfo.cwd })).browser;
       const context = config.browser.isolated ? await browser.newContext(config.browser.contextOptions) : browser.contexts()[0];
-      return new BrowserBackend(config, context, tools);
+      return session.wrap(new BrowserBackend(config, context, session.tools));
     },
   };
   return createServer('api', packageJSON.version, backendFactory, Promise.resolve(), false);
