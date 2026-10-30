@@ -51,6 +51,7 @@ export function decorateMCPCommand(command: Command) {
       .option('--executable-path <path>', 'path to the browser executable.')
       .option('--extension', 'Connect to a running browser instance (Edge/Chrome only). Requires the "Playwright Extension" to be installed.')
       .option('--endpoint <endpoint>', 'Bound browser endpoint to connect to.')
+      .option('--exclude-tools <tools>', 'comma-separated list of tools to remove from every session, for example "browser_run_code_unsafe". Excluded tools are neither listed nor callable.', commaSeparatedList)
       .option('--file-paths <mode>', 'how file paths are rendered in tool results, "relative" to the workspace root or "absolute". Default is "relative".', enumParser.bind(null, '--file-paths', ['relative', 'absolute']))
       .option('--grant-permissions <permissions...>', 'List of permissions to grant to the browser context, for example "geolocation", "clipboard-read", "clipboard-write".', commaSeparatedList)
       .option('--headless', 'run browser in headless mode, headed by default')
@@ -101,7 +102,7 @@ export function decorateMCPCommand(command: Command) {
           options.caps.push('devtools');
 
         const config = await resolveCLIConfigForMCP(options);
-        const catalog = new ToolCatalog({ toolGroups: config.toolGroups });
+        const catalog = new ToolCatalog({ toolGroups: config.toolGroups, excludeTools: config.excludeTools });
         const useSharedBrowser = config.sharedBrowserContext || config.browser.isolated;
         let sharedBrowserPromise: Promise<BrowserWithInfo> | undefined;
         let clientCount = 0;
