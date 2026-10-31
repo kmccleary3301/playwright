@@ -22,7 +22,6 @@ import { elementSchema } from './snapshot';
 import { defineTabTool } from './tool';
 
 import type { Response } from './response';
-import type { Tab } from './tab';
 import type * as playwright from '../../..';
 
 const STYLE_PRESETS = {
@@ -171,7 +170,6 @@ function snapshotTargets(snapshot: unknown): z.infer<typeof capturedTargetSchema
   const parsed = snapshotPayloadSchema.parse(snapshot);
   return parsed.targets || [];
 }
-
 
 
 function resolveProperties(params: { preset?: StylePreset, properties?: string[] }): string[] {

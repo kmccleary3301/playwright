@@ -17,6 +17,7 @@
 import { test, expect } from './fixtures';
 
 test.use({ mcpCaps: ['styles'] });
+test.skip(({ mcpBrowser }) => !['chrome', 'chromium', 'msedge'].includes(mcpBrowser ?? ''), 'browser_css_rules reads rules over CDP, so it only runs in Chromium');
 
 test('browser_css_rules reports external, inline stylesheet, and element style sources', async ({ client, server }) => {
   const externalCss = '#target { color: rebeccapurple; }\n';

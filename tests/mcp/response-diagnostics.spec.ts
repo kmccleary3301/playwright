@@ -15,10 +15,20 @@
  */
 
 import { test, expect } from './fixtures';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { CompatibilityCallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
-function responseText(response: CallToolResult): string {
-  return response.content.map(content => content.type === 'text' ? content.text : '').join('\n');
+type TextContent = { type: 'text', text: string };
+
+function isTextContent(content: unknown): content is TextContent {
+  if (typeof content !== 'object' || content === null || !('type' in content) || content.type !== 'text')
+    return false;
+  return 'text' in content && typeof content.text === 'string';
+}
+
+function responseText(response: CompatibilityCallToolResult): string {
+  if (!('content' in response) || !Array.isArray(response.content))
+    throw new Error('Tool call result did not include content');
+  return response.content.filter(isTextContent).map(content => content.text).join('\n');
 }
 
 test('new console, page, and HTTP errors are shown inline while successful activity is omitted', async ({ client, server }) => {

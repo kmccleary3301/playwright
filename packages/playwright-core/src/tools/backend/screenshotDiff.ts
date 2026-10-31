@@ -16,8 +16,8 @@
 
 import fs from 'fs';
 
-import { PNG } from '../../utilsBundle';
 import * as z from 'zod';
+import { PNG } from '../../utilsBundle';
 
 import { optionalElementSchema } from './snapshot';
 import { defineTabTool } from './tool';
@@ -182,4 +182,3 @@ const screenshotDiff = defineTabTool({
 });
 
 export default [screenshotDiff];
-

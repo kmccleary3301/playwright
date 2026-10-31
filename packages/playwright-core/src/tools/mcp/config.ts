@@ -49,6 +49,7 @@ export type CLIOptions = {
   consoleLevel?: 'error' | 'warning' | 'info' | 'debug';
   device?: string;
   endpoint?: string;
+  excludeTools?: string[];
   extension?: boolean;
   executablePath?: string;
   filePaths?: 'relative' | 'absolute';
@@ -380,6 +381,7 @@ function configFromCLIOptions(cliOptions: CLIOptions): Config & { configFile?: s
     },
     capabilities: cliOptions.caps as ToolCapability[],
     toolGroups: cliOptions.toolGroups,
+    excludeTools: cliOptions.excludeTools,
     console: {
       level: cliOptions.consoleLevel,
     },
@@ -438,6 +440,7 @@ export function configFromEnv(env?: NodeJS.ProcessEnv): Config & { configFile?: 
   if (e.PLAYWRIGHT_MCP_CONSOLE_LEVEL)
     options.consoleLevel = enumParser<'error' | 'warning' | 'info' | 'debug'>('--console-level', ['error', 'warning', 'info', 'debug'], e.PLAYWRIGHT_MCP_CONSOLE_LEVEL);
   options.device = envToString(e.PLAYWRIGHT_MCP_DEVICE);
+  options.excludeTools = commaSeparatedList(e.PLAYWRIGHT_MCP_EXCLUDE_TOOLS);
   options.executablePath = envToString(e.PLAYWRIGHT_MCP_EXECUTABLE_PATH);
   options.extension = envToBoolean(e.PLAYWRIGHT_MCP_EXTENSION);
   if (e.PLAYWRIGHT_MCP_FILE_PATHS)

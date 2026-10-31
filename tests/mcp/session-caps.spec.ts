@@ -109,7 +109,7 @@ test('HTTP rejects capability groups not enabled on the server', async ({ server
   const response = await fetch(new URL('/mcp?caps=pdf', serverUrl), {
     method: 'POST',
     headers: {
-      accept: 'application/json, text/event-stream',
+      'accept': 'application/json, text/event-stream',
       'content-type': 'application/json',
     },
     body: JSON.stringify({

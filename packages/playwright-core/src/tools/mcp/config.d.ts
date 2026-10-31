@@ -152,6 +152,12 @@ export type Config = {
   toolGroups?: boolean;
 
   /**
+   * Tools to remove from every session, for example `['browser_run_code_unsafe']`. Excluded tools
+   * are neither listed nor callable, and a family tool drops their actions. Unknown names are an error.
+   */
+  excludeTools?: string[];
+
+  /**
    * Whether to save the Playwright session into the output directory.
    */
   saveSession?: boolean;

@@ -16,8 +16,8 @@
 
 import fs from 'fs';
 
-import { diff } from '../../utilsBundle';
 import * as z from 'zod';
+import { diff } from '../../utilsBundle';
 
 import { optionalElementSchema } from './snapshot';
 import { defineTabTool } from './tool';
@@ -225,4 +225,3 @@ const domDiff = defineTabTool({
 });
 
 export default [ariaSnapshotDiff, domSnapshot, domDiff];
-

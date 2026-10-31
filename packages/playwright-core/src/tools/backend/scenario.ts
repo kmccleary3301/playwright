@@ -272,13 +272,12 @@ const runScenario = defineTabTool({
     const summaryFile = await response.resolveClientOutputFile({ prefix: 'scenario-summary', ext: 'json' }, 'Scenario summary');
     await response.addFileResult(summaryFile, JSON.stringify(summary, null, 2));
 
-    if (summary.status === 'passed') {
+    if (summary.status === 'passed')
       response.addTextResult(`Scenario passed (${summary.steps.length} steps).`);
-    } else if (summary.failedStep) {
+    else if (summary.failedStep)
       response.addError(`Scenario failed at step ${summary.failedStep.index}: ${summary.failedStep.step}\nError: ${summary.error}\nARIA excerpt:\n${failureAriaExcerpt}`);
-    } else {
+    else
       response.addError('Scenario failed.');
-    }
   }
 });
 

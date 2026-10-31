@@ -16,7 +16,7 @@
 
 import * as z from 'zod';
 
-import { filteredTools } from '../backend/tools';
+import { browserTools, filteredTools } from '../backend/tools';
 
 import type { Tool, ToolCapability } from '../backend/tool';
 import type * as mcpServer from '../utils/mcp/server';
@@ -289,10 +289,16 @@ export type CatalogSession = {
 
 export class ToolCatalog {
   private _toolGroups: boolean;
+  private _excludeTools: Set<string>;
   private _sessions = new Map<string, CatalogSession>();
 
-  constructor(options: { toolGroups?: boolean }) {
+  constructor(options: { toolGroups?: boolean, excludeTools?: string[] }) {
     this._toolGroups = !!options.toolGroups;
+    this._excludeTools = new Set(options.excludeTools);
+    const known = new Set(browserTools.map(tool => tool.schema.name));
+    const unknown = [...this._excludeTools].filter(name => !known.has(name));
+    if (unknown.length)
+      throw new Error(`Unknown tools in excludeTools: ${unknown.join(', ')}. Use tool names such as browser_cookie_clear, not group names.`);
   }
 
   session(capabilities: ToolCapability[]): CatalogSession {
@@ -306,7 +312,7 @@ export class ToolCatalog {
   }
 
   private _createSession(capabilities: ToolCapability[]): CatalogSession {
-    const tools = filteredTools({ capabilities });
+    const tools = filteredTools({ capabilities }).filter(tool => !this._excludeTools.has(tool.schema.name));
     const byName = new Map(tools.map(tool => [tool.schema.name, tool.schema as ToolSchema<any>]));
     const enabled = this._toolGroups ? enabledFamilies(byName) : [];
 

@@ -29,7 +29,7 @@ import type { Config } from './config.d';
 export async function createConnection(userConfig: Config = {}, contextGetter?: () => Promise<BrowserContext>): Promise<Server> {
   const config = await resolveConfig(userConfig);
   const capabilities = config.capabilities ?? [];
-  const session = new ToolCatalog({ toolGroups: config.toolGroups }).session(capabilities);
+  const session = new ToolCatalog({ toolGroups: config.toolGroups, excludeTools: config.excludeTools }).session(capabilities);
   const backendFactory: ServerBackendFactory = {
     name: 'api',
     nameInConfig: 'api',
